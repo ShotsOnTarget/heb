@@ -18,13 +18,8 @@ sub-skills are invoked.
 
 ## Verbosity
 
-Check `heb config get verbosity`. Apply the same rules as other
-sub-skills:
-
-- **`[loud]`** — show learn and consolidate output
-- **quiet (default)** — 1-sentence summary (e.g. "Learned 3 lessons,
-  consolidated 3 new memories.")
-- **mute** — emit nothing
+Always quiet. Emit a 1-sentence summary (e.g. "Learned 3 lessons,
+consolidated 3 new memories."). No display blocks, no JSON.
 
 ## Steps
 

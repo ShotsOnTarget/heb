@@ -68,24 +68,9 @@ what must be done. Treat it as immutable.
 
 ---
 
-## Step 0 — Verbosity check (run FIRST, before anything else)
+## Verbosity
 
-Before starting Phase A, read the verbosity config:
-
-```bash
-heb config get verbosity
-```
-
-The result is one of: `loud`, `quiet`, `mute`. Apply the rules below
-for the entire pipeline run (Phase A and Phase B):
-
-### loud
-
-Everything as-is. All display blocks emitted. All human-readable
-output from sub-skills and the Go binary shown to the user. This is
-the original behavior — change nothing.
-
-### quiet (default)
+The pipeline always runs in **quiet** mode:
 
 - **No display blocks, no JSON on the terminal.** Suppress
   `RETRIEVAL RESULT`, `REFLECT`, `PREDICT`, `LEARN`,
@@ -103,36 +88,10 @@ the original behavior — change nothing.
   prompt. Quiet mode only silences the pipeline scaffolding, not the
   actual work.
 
-### mute
-
-- **Emit NOTHING from the pipeline to the terminal.** No display
-  blocks, no JSON, no summaries, no single-sentence lines. Complete
-  silence from the pipeline.
-- **The execute step itself** still produces its normal output — mute
-  only silences the pipeline, not the work product.
-- **Do NOT emit the acceptance prompt.** The session is still
-  committable — the user knows they can say "commit" — but do not
-  print the banner.
-
-### Applying verbosity to sub-skills
-
-When invoking sub-skills (`/heb:recall`, `/heb:remember`),
-**prepend the verbosity level as a prefix** in the skill args so each
-skill knows whether to suppress its display blocks:
-
-- In `loud` mode: prepend `[loud] ` to the skill args
-- In `quiet` or `mute` mode: no prefix needed — **sub-skills default
-  to quiet**. You may optionally prepend `[quiet] ` or `[mute] ` but
-  it is not required.
-
-Sub-skills default to quiet because agents commonly forget to pass
-the prefix. The safe default is silence. Only `[loud]` needs to be
-explicitly passed.
-
-**In addition**, in `quiet` or `mute` mode: do not display the JSON
-output from sub-skills to the user either. Capture it silently and
-pass it to the next step. The user should see nothing from the
-pipeline scaffolding — only the execute step's actual work product.
+Do not display JSON output from sub-skills to the user. Capture it
+silently and pass it to the next step. The user should see nothing
+from the pipeline scaffolding — only the execute step's actual work
+product.
 
 ---
 
@@ -147,8 +106,7 @@ memories against the prompt and forming predictions) — all in one step.
 
 ```
 Skill: heb:recall
-args: [quiet] <the original prompt, exactly as typed>
-       ^^^^^^ only if verbosity is quiet; use [mute] if mute; omit if loud
+args: <the original prompt, exactly as typed>
 ```
 
 The recaller will parse the prompt, start a session, retrieve context,
