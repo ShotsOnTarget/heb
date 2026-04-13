@@ -11,7 +11,7 @@ import (
 	"github.com/steelboltgames/heb/internal/store"
 )
 
-// recallInput accepts Contract 2 output shape.
+// recallInput accepts contract:sense>recall output shape.
 type recallInput struct {
 	SessionID string   `json:"session_id,omitempty"`
 	Project   string   `json:"project,omitempty"`

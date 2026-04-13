@@ -13,7 +13,7 @@ type GitRef struct {
 }
 
 // gitPass executes the full git log retrieval cascade for the given
-// Contract 2 tokens and returns up to cfg.GitCap deduplicated refs
+// contract:sense>recall tokens and returns up to cfg.GitCap deduplicated refs
 // across all tokens. Processing is in-order-with-early-stop (spec §7).
 func gitPass(tokens []string, runner Runner, cfg Config) []GitRef {
 	if cfg.NoExternal {

@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls heb*:*)",
+      "Bash(go build:*)",
+      "Bash(heb config:*)",
+      "Bash(go test:*)",
+      "Bash(go install:*)",
+      "Bash(heb session:*)",
+      "Bash(heb consolidate:*)",
+      "Bash(heb recall:*)",
+      "Bash(ls:*)",
+      "Bash(do git:*)",
+      "Bash(heb claude:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(heb dream:*)",
+      "Bash(heb status:*)",
+      "Bash(heb:*)",
+      "Bash(claude:*)",
+      "Read(//c/Users/steve/code/dreadfall-0/**)",
+      "Bash(sqlite3 .heb/memory.db \"SELECT key, value FROM meta WHERE key LIKE ''config.%''\")"
+    ]
+  }
+}

@@ -1,4 +1,4 @@
-// Package consolidate translates Contract 4 (the output of /learn) into
+// Package consolidate translates contract:learn>consolidate (the output of /learn) into
 // the explicit delta payload that the heb store can apply. It is pure —
 // no filesystem, no sqlite — so it can be unit-tested in isolation.
 //
@@ -13,7 +13,10 @@
 // applies the Result to the store inside its own transaction.
 package consolidate
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // Config holds all tunable constants. Defaults match the existing
 // consolidate.md math exactly.
@@ -47,12 +50,12 @@ func DefaultConfig() Config {
 	}
 }
 
-// Contract4 is the parsed /learn output.
-type Contract4 struct {
+// LearnResult is the parsed /learn output.
+type LearnResult struct {
 	SessionID        string          `json:"session_id"`
 	BeadID           string          `json:"bead_id,omitempty"`
 	Project          string          `json:"project"`
-	Intent           string          `json:"intent,omitempty"`
+	Intent           string          `json:"intent,omitempty"` // deprecated: unused, kept for backwards compat with existing episodes
 	Tokens           []string        `json:"tokens,omitempty"`
 	MemoryLoaded     json.RawMessage `json:"memory_loaded,omitempty"`
 	Implementation   Implementation  `json:"implementation"`
@@ -61,11 +64,37 @@ type Contract4 struct {
 	Completed        bool            `json:"completed"`
 	Decisions        []json.RawMessage `json:"decisions,omitempty"`
 	Lessons          []Lesson        `json:"lessons"`
-	RecalledViaEdges []string        `json:"recalled_via_edges,omitempty"`
+	RecalledViaEdges FlexStringSlice `json:"recalled_via_edges,omitempty"`
 
 	// Raw holds the full original payload so the episode row can
 	// preserve everything, including fields the CLI does not interpret.
 	Raw json.RawMessage `json:"-"`
+}
+
+// FlexStringSlice unmarshals both ["s·p·o"] and [["s","p","o"]] into []string.
+// When an element is an array of strings, the parts are joined with "·".
+type FlexStringSlice []string
+
+func (f *FlexStringSlice) UnmarshalJSON(data []byte) error {
+	var raw []json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	result := make([]string, 0, len(raw))
+	for _, elem := range raw {
+		var s string
+		if err := json.Unmarshal(elem, &s); err == nil {
+			result = append(result, s)
+			continue
+		}
+		var arr []string
+		if err := json.Unmarshal(elem, &arr); err == nil {
+			result = append(result, strings.Join(arr, "\u00b7"))
+			continue
+		}
+	}
+	*f = result
+	return nil
 }
 
 // Implementation is the nested block tracking file operations and
@@ -141,7 +170,7 @@ type Payload struct {
 }
 
 // EpisodePayload mirrors the shape the store writes verbatim into the
-// episodes table. Payload is the full Contract 4 JSON nested as-is.
+// episodes table. Payload is the full contract:learn>consolidate JSON nested as-is.
 type EpisodePayload struct {
 	SessionID string          `json:"session_id"`
 	Payload   json.RawMessage `json:"payload"`

@@ -133,7 +133,7 @@ Basename of the current working directory (e.g. `dreadfall-0`). Pull
 from the contract:sense>recall output if present.
 
 ### timestamp_end
-**Actual current system time** at the moment `/learn` runs, formatted
+**Actual current system time** at the moment `/heb:learn` runs, formatted
 as `YYYY-MM-DDTHH:MM:SSZ` in UTC. Do NOT default to midnight.
 
 ### raw_prompt
@@ -143,7 +143,7 @@ The original developer prompt that opened this task, verbatim.
 Copy from contract:sense>recall. Do not re-derive.
 
 ### tokens
-Copy from the contract:sense>recall JSON output of `/sense`. Do not re-derive.
+Copy from the contract:sense>recall JSON output of `/heb:recall`. Do not re-derive.
 
 ### memory_loaded
 Scan for the `RETRIEVAL RESULT` block.
@@ -160,8 +160,11 @@ counts `0` and `was_cold_start: true`.
 ### recalled_via_edges
 Scan the `RETRIEVAL RESULT` block for memories where `source` is
 `"edge"`. These are memories that entered context via spreading
-activation, not direct token match. Extract their tuples as strings
-in `"subject·predicate·object"` format.
+activation, not direct token match. Extract their tuples as **flat
+strings** in `"subject·predicate·object"` format.
+
+**Type: `string[]`** — each element is a single string with `·`
+separators, NOT a nested array. Emit `["a·b·c"]` not `[["a","b","c"]]`.
 
 If reading from the JSON block, use the `tuple` field directly for
 entries where `"source": "edge"`.
@@ -294,7 +297,7 @@ Only write lessons if at least one of:
 - new observations made that were not in retrieved memories
 
 If none: `lessons` should be empty. The session confirmed existing
-memories — that is handled by edge strengthening in `/consolidate`,
+memories — that is handled by edge strengthening in `/heb:consolidate`,
 not by writing new lessons.
 
 ### Synthesis observation
@@ -316,12 +319,12 @@ through the work done. Not speculatively.
 ### Prediction reconciliation
 
 After extracting lessons and any synthesis observation, reconcile the
-prediction from `/reflect` against what actually happened during
+prediction from `/heb:reflect` against what actually happened during
 execution.
 
-Find the `PREDICT` block and prediction JSON from the `/reflect`
+Find the `PREDICT` block and prediction JSON from the `/heb:reflect`
 output in conversation context. If no prediction exists (e.g.
-`/reflect` was skipped), set `prediction_reconciliation` to `null`
+`/heb:reflect` was skipped), set `prediction_reconciliation` to `null`
 and skip this section entirely.
 
 For each prediction element (files, approach, outcome, risks),
@@ -370,9 +373,32 @@ is expected, not informative. Do not generate lessons from cold-start
 prediction mismatches. Instead, set `prediction_reconciliation.cold_start`
 to `true` and note that the session seeded initial knowledge.
 
-## Output format — emit BOTH blocks, in this order
+## Verbosity
 
-First, the human-readable block:
+The orchestrator may pass `[loud]`, `[quiet]`, or `[mute]` as context.
+**Default is quiet** — if no verbosity signal is present, behave as
+`[quiet]`.
+
+- **`[loud]`** — emit both human-readable and JSON blocks to the terminal
+- **`[quiet]` or no signal** — emit a short summary listing the count
+  AND the actual lesson tuples so the user can see what was extracted.
+  No display blocks, no JSON. Compute internally and persist. Example:
+  ```
+  Learned 3 lessons, 0 corrections:
+    + drone_cost·expressed_as·threshold_delta
+    + drone_types·follow·const_pattern
+    + combat_drone·stat_budget·higher_than_utility
+  ```
+  If no lessons were extracted, just emit "Learned 0 lessons, 0 corrections."
+- **`[mute]`** — emit nothing. Compute and persist silently.
+
+## Output format
+
+**If loud:** emit BOTH blocks below to the terminal. **If quiet (or no
+signal):** emit only a 1-sentence summary, then persist internally.
+**If mute:** emit nothing, persist internally.
+
+First, the human-readable block (loud only):
 
 ```
 LEARN
@@ -464,7 +490,7 @@ the display block and the JSON. No commentary after the JSON.
 ```
 
 `prediction_reconciliation` is `null` when no prediction was present
-in the session (e.g. `/reflect` was skipped). When `cold_start` is
+in the session (e.g. `/heb:reflect` was skipped). When `cold_start` is
 `true`, `elements` is empty and no prediction lessons are generated.
 
 ## Session persistence

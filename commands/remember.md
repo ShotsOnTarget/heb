@@ -124,7 +124,8 @@ count of memories, `git_refs` is the count of git commits,
 `was_cold_start` is true if both are zero.
 
 **recalled_via_edges** — from recall contract, tuples where
-`"source": "edge"`.
+`"source": "edge"`. Each element is a flat `"subject·predicate·object"`
+string, NOT a nested array.
 
 **implementation.files_read** — every file the agent opened, read,
 searched, or grep'd during execution. Deduplicate alphabetically.

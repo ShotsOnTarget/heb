@@ -10,12 +10,19 @@ func main() {
 		fmt.Fprintln(os.Stderr, "usage: heb <command> [args]")
 		fmt.Fprintln(os.Stderr, "commands:")
 		fmt.Fprintln(os.Stderr, "  init         initialise memory store in current repo")
-		fmt.Fprintln(os.Stderr, "  recall       retrieve memories (Contract 2 JSON on stdin)")
-		fmt.Fprintln(os.Stderr, "  consolidate  apply session learning (Contract 4 JSON on stdin)")
+		fmt.Fprintln(os.Stderr, "  sense        parse a prompt into tokens via LLM")
+		fmt.Fprintln(os.Stderr, "  retrieve     sense + retrieve context from memory/git/beads")
+		fmt.Fprintln(os.Stderr, "  reflect      sense + retrieve + reconcile memories against prompt")
+		fmt.Fprintln(os.Stderr, "  recall       retrieve memories (contract:sense>recall JSON on stdin)")
+		fmt.Fprintln(os.Stderr, "  consolidate  apply session learning (contract:learn>consolidate JSON on stdin)")
 		fmt.Fprintln(os.Stderr, "  session      durable pipeline session state")
 		fmt.Fprintln(os.Stderr, "  status       graph health and statistics")
 		fmt.Fprintln(os.Stderr, "  dream        dream subcommands (seeds, random-pairs, write, pairs)")
 		fmt.Fprintln(os.Stderr, "  purge        delete memories by ID")
+		fmt.Fprintln(os.Stderr, "  resume       continue an open session with a new prompt via claude --resume")
+		fmt.Fprintln(os.Stderr, "  learn        extract lessons from a session's transcript via LLM")
+		fmt.Fprintln(os.Stderr, "  remember     learn + consolidate + close session in one step")
+		fmt.Fprintln(os.Stderr, "  config       get/set configuration (verbosity: loud|quiet|mute)")
 		fmt.Fprintln(os.Stderr, "  claude       manage claude commands (install, update, status)")
 		os.Exit(2)
 	}
@@ -34,10 +41,27 @@ func main() {
 		os.Exit(runDream(os.Args[2:]))
 	case "purge":
 		os.Exit(runPurge(os.Args[2:]))
+	case "config":
+		os.Exit(runConfig(os.Args[2:]))
+	case "sense":
+		os.Exit(runSense(os.Args[2:]))
+	case "retrieve":
+		os.Exit(runRetrieve(os.Args[2:]))
+	case "reflect":
+		os.Exit(runReflect(os.Args[2:]))
+	case "resume":
+		os.Exit(runResume(os.Args[2:]))
+	case "learn":
+		os.Exit(runLearn(os.Args[2:]))
+	case "remember":
+		os.Exit(runRemember(os.Args[2:]))
 	case "claude":
 		os.Exit(runClaude(os.Args[2:]))
+	case "version":
+		fmt.Println("heb " + Version)
+		os.Exit(0)
 	default:
-		fmt.Fprintf(os.Stderr, "heb: unknown command %q\n", os.Args[1])
-		os.Exit(2)
+		// Not a subcommand — treat entire args as a prompt
+		os.Exit(runPipeline(os.Args[1:]))
 	}
 }

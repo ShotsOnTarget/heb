@@ -13,7 +13,7 @@ func approxEqual(a, b float64) bool {
 
 func TestBuildMemoryDeltasBasic(t *testing.T) {
 	cfg := DefaultConfig()
-	c := Contract4{
+	c := LearnResult{
 		Lessons: []Lesson{
 			{Observation: "drone_stats·derived_by·type_lookup", Scope: "project", Confidence: 0.80},
 		},
@@ -45,7 +45,7 @@ func TestBuildMemoryDeltasBasic(t *testing.T) {
 
 func TestBuildMemoryDeltasBelowConfidence(t *testing.T) {
 	cfg := DefaultConfig()
-	c := Contract4{
+	c := LearnResult{
 		Lessons: []Lesson{
 			{Observation: "a·b·c", Confidence: 0.49}, // just below
 			{Observation: "d·e·f", Confidence: 0.50}, // at threshold — kept
@@ -69,7 +69,7 @@ func TestBuildMemoryDeltasBelowConfidence(t *testing.T) {
 
 func TestBuildMemoryDeltasMalformed(t *testing.T) {
 	cfg := DefaultConfig()
-	c := Contract4{
+	c := LearnResult{
 		Lessons: []Lesson{
 			{Observation: "only·two", Confidence: 0.9},
 			{Observation: "a·b·c·d", Confidence: 0.9},
@@ -93,7 +93,7 @@ func TestBuildMemoryDeltasMalformed(t *testing.T) {
 
 func TestBuildMemoryDeltasUniversalPrefix(t *testing.T) {
 	cfg := DefaultConfig()
-	c := Contract4{
+	c := LearnResult{
 		Lessons: []Lesson{
 			{Observation: "gd·prefer·static_vars", Scope: "universal_candidate", Confidence: 0.85},
 		},

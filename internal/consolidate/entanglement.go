@@ -18,7 +18,7 @@ import "strings"
 // an additional memoryDelta is emitted with event "entanglement_signal"
 // and delta_new = delta_reinforce = signal. This is appended to, not
 // merged with, any reinforcement delta already emitted in §3.2.
-func buildEntanglementDeltas(written []MemoryDelta, c Contract4, cfg Config) []MemoryDelta {
+func buildEntanglementDeltas(written []MemoryDelta, c LearnResult, cfg Config) []MemoryDelta {
 	if len(c.Implementation.SurpriseTouches) == 0 || c.CorrectionCount == 0 {
 		return nil
 	}

@@ -18,7 +18,7 @@ import (
 //   - observation does not split into exactly 3 non-empty parts
 //
 // Returns (deltas, skipped).
-func buildMemoryDeltas(c Contract4, cfg Config) ([]MemoryDelta, []SkippedTuple) {
+func buildMemoryDeltas(c LearnResult, cfg Config) ([]MemoryDelta, []SkippedTuple) {
 	var deltas []MemoryDelta
 	var skipped []SkippedTuple
 

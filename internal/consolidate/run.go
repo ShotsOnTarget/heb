@@ -2,7 +2,7 @@ package consolidate
 
 import "encoding/json"
 
-// Run is the pure entry point: take a parsed Contract 4 plus a Config
+// Run is the pure entry point: take a parsed contract:learn>consolidate plus a Config
 // and produce a Result. No filesystem, no sqlite. The caller (cmd/heb)
 // is responsible for applying Result.Payload to the store inside its
 // own transaction and filling in the post-apply fields (Applied,
@@ -13,8 +13,8 @@ import "encoding/json"
 //  2. memories   — lessons → memoryDelta (session_reinforced)
 //  3. edges      — pair enumeration over the written set
 //  4. entanglement — surprise_touches → memoryDelta (entanglement_signal)
-//  5. episode    — always included, carries the full Contract 4 verbatim
-func Run(c Contract4, cfg Config) Result {
+//  5. episode    — always included, carries the full contract:learn>consolidate verbatim
+func Run(c LearnResult, cfg Config) Result {
 	met, reason := checkThreshold(c)
 
 	result := Result{
@@ -56,7 +56,7 @@ func Run(c Contract4, cfg Config) Result {
 			Payload:   c.Raw,
 		}
 	} else {
-		// Fallback: marshal the Contract4 struct itself if Raw was
+		// Fallback: marshal the LearnResult struct itself if Raw was
 		// not populated (e.g. in unit tests).
 		if raw, err := json.Marshal(c); err == nil {
 			result.Payload.Episode = &EpisodePayload{

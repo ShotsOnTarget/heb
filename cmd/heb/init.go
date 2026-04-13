@@ -25,5 +25,6 @@ func runInit(_ []string) int {
 	} else {
 		fmt.Fprintf(os.Stderr, "heb already initialised at %s\n", s.Path())
 	}
+
 	return 0
 }

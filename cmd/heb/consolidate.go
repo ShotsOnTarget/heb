@@ -14,7 +14,7 @@ import (
 )
 
 // runConsolidate is the `heb consolidate` entry point. It defaults to
-// Contract 4 mode: reads a /learn output on stdin, runs the
+// contract:learn>consolidate mode: reads a /learn output on stdin, runs the
 // consolidate.Run translator to produce a Payload, then applies the
 // Payload to the store inside a single transaction.
 //
@@ -36,7 +36,7 @@ func runConsolidate(args []string) int {
 	fs.IntVar(&cfg.EdgeEstablishThreshold, "edge-establish-threshold", cfg.EdgeEstablishThreshold, "co_activation_count >= this means edge is established")
 	fs.Float64Var(&cfg.MinConfidence, "min-confidence", cfg.MinConfidence, "drop lessons below this confidence")
 	fs.StringVar(&cfg.Format, "format", cfg.Format, "output format: both | human | json")
-	raw := fs.Bool("raw", false, "read explicit Payload JSON on stdin; skip the Contract 4 translator")
+	raw := fs.Bool("raw", false, "read explicit Payload JSON on stdin; skip the LearnResult translator")
 
 	if err := fs.Parse(args); err != nil {
 		fmt.Fprintf(os.Stderr, "heb consolidate: %v\n", err)
@@ -53,7 +53,7 @@ func runConsolidate(args []string) int {
 	if *raw {
 		result, err = runRawPayload(data)
 	} else {
-		result, err = runContract4(data, cfg)
+		result, err = runLearnResult(data, cfg)
 	}
 	if err != nil {
 		// Always emit a Result-shaped JSON on stdout so callers can parse it uniformly.
@@ -68,12 +68,12 @@ func runConsolidate(args []string) int {
 	return 0
 }
 
-// runContract4 parses a Contract 4 JSON blob, runs the translator to
+// runLearnResult parses a contract:learn>consolidate JSON blob, runs the translator to
 // produce a Payload, and applies the Payload to the store.
-func runContract4(data []byte, cfg consolidate.Config) (consolidate.Result, error) {
-	var c consolidate.Contract4
+func runLearnResult(data []byte, cfg consolidate.Config) (consolidate.Result, error) {
+	var c consolidate.LearnResult
 	if err := json.Unmarshal(data, &c); err != nil {
-		return consolidate.Result{}, fmt.Errorf("parse contract 4: %w", err)
+		return consolidate.Result{}, fmt.Errorf("parse contract:learn>consolidate: %w", err)
 	}
 	c.Raw = append(json.RawMessage(nil), data...)
 
@@ -114,9 +114,9 @@ func runRawPayload(data []byte) (consolidate.Result, error) {
 }
 
 // applyPayload runs the full store transaction against result.Payload,
-// filling in the post-apply fields on the result. When c4 and cfg are
+// filling in the post-apply fields on the result. When lr and cfg are
 // non-nil, also runs the edge decay pass for unconfirmed edge recalls.
-func applyPayload(result *consolidate.Result, c4 *consolidate.Contract4, cfg *consolidate.Config) error {
+func applyPayload(result *consolidate.Result, lr *consolidate.LearnResult, cfg *consolidate.Config) error {
 	p := result.Payload
 
 	root, err := store.RepoRoot()
@@ -142,8 +142,8 @@ func applyPayload(result *consolidate.Result, c4 *consolidate.Contract4, cfg *co
 		tx.Rollback()
 		return err
 	}
-	if c4 != nil && cfg != nil {
-		if err := applyEdgeDecay(tx, s.DB(), c4, cfg, result); err != nil {
+	if lr!= nil && cfg != nil {
+		if err := applyEdgeDecay(tx, s.DB(), lr, cfg, result); err != nil {
 			tx.Rollback()
 			return err
 		}
@@ -217,28 +217,28 @@ func applyEpisode(tx *sql.Tx, p consolidate.Payload, result *consolidate.Result)
 // whose target memories were not confirmed by learn. Only runs for act
 // sessions (files_touched > 0 or correction_count > 0). Only decays
 // young edges (co_activation_count < EdgeEstablishThreshold).
-func applyEdgeDecay(tx *sql.Tx, db *sql.DB, c4 *consolidate.Contract4, cfg *consolidate.Config, result *consolidate.Result) error {
+func applyEdgeDecay(tx *sql.Tx, db *sql.DB, lr*consolidate.LearnResult, cfg *consolidate.Config, result *consolidate.Result) error {
 	if cfg.EdgeDecayRate <= 0 {
 		return nil
 	}
-	if len(c4.RecalledViaEdges) == 0 {
+	if len(lr.RecalledViaEdges) == 0 {
 		return nil
 	}
 	if !result.ThresholdMet {
 		return nil
 	}
 	// Only decay in act sessions.
-	if len(c4.Implementation.FilesTouched) == 0 && c4.CorrectionCount == 0 {
+	if len(lr.Implementation.FilesTouched) == 0 && lr.CorrectionCount == 0 {
 		return nil
 	}
 
 	// Build set of written lesson tuples for fast lookup.
-	writtenSet := make(map[string]bool, len(c4.Lessons))
-	for _, l := range c4.Lessons {
+	writtenSet := make(map[string]bool, len(lr.Lessons))
+	for _, l := range lr.Lessons {
 		writtenSet[l.Observation] = true
 	}
 
-	for _, tuple := range c4.RecalledViaEdges {
+	for _, tuple := range lr.RecalledViaEdges {
 		if writtenSet[tuple] {
 			continue
 		}

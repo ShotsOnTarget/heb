@@ -12,7 +12,7 @@ package consolidate
 //	len(decisions) > 0
 //	len(files_touched) > 0
 //	len(lessons) > 0
-func checkThreshold(c Contract4) (bool, string) {
+func checkThreshold(c LearnResult) (bool, string) {
 	switch {
 	case c.CorrectionCount > 0:
 		return true, "correction_count > 0"

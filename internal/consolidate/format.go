@@ -81,7 +81,7 @@ func RenderHuman(r Result) string {
 	return b.String()
 }
 
-// RenderJSON produces Block 2 — the Contract 5 result JSON. Marshals
+// RenderJSON produces Block 2 — the contract:consolidate>done result JSON. Marshals
 // Result as-is (with indentation).
 func RenderJSON(r Result) string {
 	if r.Applied == nil {
@@ -100,20 +100,44 @@ func RenderJSON(r Result) string {
 	return string(out)
 }
 
-// StderrSummary is the single-line summary written to stderr:
-// `consolidate: Np new, Nr reinforced, Ne edges, Nt entanglement, episode=<bool>`.
+// StderrSummary produces a multi-line summary written to stderr that
+// includes counts AND the actual memory tuples that were written.
 func StderrSummary(r Result) string {
-	var added, reinforced, entCount int
+	var b strings.Builder
+	var newMems, reinforcedMems []MemoryApply
+	var entCount int
 	for _, a := range r.Applied {
 		switch {
 		case a.Event == "entanglement_signal":
 			entCount++
 		case a.WasNew:
-			added++
+			newMems = append(newMems, a)
 		default:
-			reinforced++
+			reinforcedMems = append(reinforcedMems, a)
 		}
 	}
-	return fmt.Sprintf("consolidate: %d new, %d reinforced, %d edges (+%d decayed), %d entanglement, episode=%v",
-		added, reinforced, r.EdgesUpdated, r.EdgesDecayed, entCount, r.EpisodeWritten)
+
+	fmt.Fprintf(&b, "consolidate: %d new, %d reinforced, %d edges (+%d decayed), %d entanglement, episode=%v",
+		len(newMems), len(reinforcedMems), r.EdgesUpdated, r.EdgesDecayed, entCount, r.EpisodeWritten)
+
+	if len(newMems) > 0 {
+		b.WriteString("\n  learned:")
+		for _, m := range newMems {
+			fmt.Fprintf(&b, "\n    + %s\u00b7%s\u00b7%s (%.2f)", m.Subject, m.Predicate, m.Object, m.NewWeight)
+		}
+	}
+	if len(reinforcedMems) > 0 {
+		b.WriteString("\n  reinforced:")
+		for _, m := range reinforcedMems {
+			fmt.Fprintf(&b, "\n    \u2191 %s\u00b7%s\u00b7%s (%.2f)", m.Subject, m.Predicate, m.Object, m.NewWeight)
+		}
+	}
+	if len(r.Skipped) > 0 {
+		b.WriteString("\n  skipped:")
+		for _, s := range r.Skipped {
+			fmt.Fprintf(&b, "\n    \u2013 %s (%s)", s.Tuple, s.Reason)
+		}
+	}
+
+	return b.String()
 }

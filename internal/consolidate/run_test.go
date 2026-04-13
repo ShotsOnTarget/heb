@@ -4,7 +4,7 @@ import "testing"
 
 func TestRunThresholdFailSkipsDeltas(t *testing.T) {
 	cfg := DefaultConfig()
-	c := Contract4{
+	c := LearnResult{
 		SessionID: "s1",
 		Project:   "p",
 		Completed: true, // no signal
@@ -26,7 +26,7 @@ func TestRunThresholdFailSkipsDeltas(t *testing.T) {
 
 func TestRunHappyPath(t *testing.T) {
 	cfg := DefaultConfig()
-	c := Contract4{
+	c := LearnResult{
 		SessionID: "s2",
 		Project:   "p",
 		Completed: true,
@@ -56,7 +56,7 @@ func TestRunHappyPath(t *testing.T) {
 // one session_reinforced and one entanglement_signal on the same tuple.
 func TestRunInteractionReinforcementPlusEntanglement(t *testing.T) {
 	cfg := DefaultConfig()
-	c := Contract4{
+	c := LearnResult{
 		SessionID:       "s3",
 		Project:         "p",
 		Completed:       true,
@@ -102,7 +102,7 @@ func TestRunInteractionReinforcementPlusEntanglement(t *testing.T) {
 
 func TestRunSkippedPropagates(t *testing.T) {
 	cfg := DefaultConfig()
-	c := Contract4{
+	c := LearnResult{
 		SessionID: "s4",
 		Project:   "p",
 		Completed: true,

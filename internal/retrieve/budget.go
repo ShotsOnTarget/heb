@@ -7,7 +7,7 @@ import (
 )
 
 // Result is the full retrieve output: the data backing both Block 1
-// (human-readable) and Block 2 (Contract 3 JSON). Trimming mutates
+// (human-readable) and Block 2 (contract:recall>reflect JSON). Trimming mutates
 // this struct in place.
 type Result struct {
 	SessionID   string         `json:"session_id"`

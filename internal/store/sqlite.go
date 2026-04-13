@@ -132,6 +132,8 @@ func Open(repoRoot string) (*SQLiteStore, error) {
 	}
 	// v4: add co_activation_count to edges for existing databases.
 	db.Exec(`ALTER TABLE edges ADD COLUMN co_activation_count INTEGER NOT NULL DEFAULT 0`)
+	// v5: add role to transcript_log for existing databases.
+	db.Exec(`ALTER TABLE transcript_log ADD COLUMN role TEXT NOT NULL DEFAULT 'assistant'`)
 	// Bump schema version if behind.
 	if _, err := db.Exec(
 		`UPDATE meta SET value = ? WHERE key = 'schema_version' AND CAST(value AS INTEGER) < ?`,
@@ -145,6 +147,44 @@ func Open(repoRoot string) (*SQLiteStore, error) {
 
 // Path returns the on-disk path of the SQLite database.
 func (s *SQLiteStore) Path() string { return s.path }
+
+// GlobalRoot returns the path to the global heb directory (~/.heb).
+func GlobalRoot() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("home dir: %w", err)
+	}
+	return filepath.Join(home, ".heb"), nil
+}
+
+// OpenGlobal opens (or creates) the global ~/.heb/memory.db store.
+func OpenGlobal() (*SQLiteStore, error) {
+	dir, err := GlobalRoot()
+	if err != nil {
+		return nil, err
+	}
+	dbPath := filepath.Join(dir, "memory.db")
+
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, fmt.Errorf("mkdir %s: %w", dir, err)
+	}
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", dbPath, err)
+	}
+	if _, err := db.Exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("pragmas: %w", err)
+	}
+	// Only create the meta table — global store only needs config.
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("schema: %w", err)
+	}
+
+	return &SQLiteStore{db: db, path: dbPath}, nil
+}
 
 const schemaSQL = `
 CREATE TABLE IF NOT EXISTS memories (
@@ -234,5 +274,20 @@ CREATE TABLE IF NOT EXISTS session_contracts (
     PRIMARY KEY (session_id, step),
     FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS transcript_log (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id         TEXT NOT NULL,
+    role               TEXT NOT NULL DEFAULT 'assistant',
+    claude_session_id  TEXT,
+    response           TEXT NOT NULL,
+    result_text        TEXT,
+    cost_usd           REAL,
+    num_turns          INTEGER,
+    created_at         INTEGER NOT NULL,
+    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_transcript_log_session ON transcript_log(session_id);
+CREATE INDEX IF NOT EXISTS idx_transcript_log_claude  ON transcript_log(claude_session_id);
 
 `

@@ -7,7 +7,7 @@ func TestEntanglementGatedBySurpriseTouches(t *testing.T) {
 	written := []MemoryDelta{
 		{Subject: "drone_stats", Predicate: "derived_by", Object: "type_lookup"},
 	}
-	c := Contract4{
+	c := LearnResult{
 		CorrectionCount: 2,
 		PeakIntensity:   0.6,
 		Implementation:  Implementation{SurpriseTouches: nil},
@@ -22,7 +22,7 @@ func TestEntanglementGatedByCorrectionCount(t *testing.T) {
 	written := []MemoryDelta{
 		{Subject: "drone_stats", Predicate: "derived_by", Object: "type_lookup"},
 	}
-	c := Contract4{
+	c := LearnResult{
 		CorrectionCount: 0,
 		PeakIntensity:   0.6,
 		Implementation:  Implementation{SurpriseTouches: []string{"game/drone_stats.gd"}},
@@ -37,7 +37,7 @@ func TestEntanglementMatch(t *testing.T) {
 	written := []MemoryDelta{
 		{Subject: "drone_stats", Predicate: "derived_by", Object: "type_lookup"},
 	}
-	c := Contract4{
+	c := LearnResult{
 		CorrectionCount: 1,
 		PeakIntensity:   0.6,
 		Implementation:  Implementation{SurpriseTouches: []string{"game/DRONE_STATS.gd"}},
@@ -66,7 +66,7 @@ func TestEntanglementNoMatch(t *testing.T) {
 	written := []MemoryDelta{
 		{Subject: "drone_stats", Predicate: "derived_by", Object: "type_lookup"},
 	}
-	c := Contract4{
+	c := LearnResult{
 		CorrectionCount: 1,
 		PeakIntensity:   0.6,
 		Implementation:  Implementation{SurpriseTouches: []string{"game/inventory.gd"}},
@@ -82,7 +82,7 @@ func TestEntanglementClampMin(t *testing.T) {
 	written := []MemoryDelta{
 		{Subject: "a", Predicate: "b", Object: "c"},
 	}
-	c := Contract4{
+	c := LearnResult{
 		CorrectionCount: 1,
 		PeakIntensity:   10.0, // signal would be -0.50, clamped to -0.08
 		Implementation:  Implementation{SurpriseTouches: []string{"a"}},
@@ -101,7 +101,7 @@ func TestEntanglementClampMax(t *testing.T) {
 	written := []MemoryDelta{
 		{Subject: "a", Predicate: "b", Object: "c"},
 	}
-	c := Contract4{
+	c := LearnResult{
 		CorrectionCount: 1,
 		PeakIntensity:   0.1, // signal would be -0.005, clamped to -0.02
 		Implementation:  Implementation{SurpriseTouches: []string{"a"}},
@@ -121,7 +121,7 @@ func TestEntanglementClampMax(t *testing.T) {
 // emitted as TWO separate deltas (§3.4: "appended, not merged").
 func TestEntanglementInteractionWithReinforcement(t *testing.T) {
 	cfg := DefaultConfig()
-	c := Contract4{
+	c := LearnResult{
 		CorrectionCount: 1,
 		PeakIntensity:   0.6,
 		Lessons: []Lesson{

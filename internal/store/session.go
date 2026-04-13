@@ -225,6 +225,142 @@ func ResumeSession(db *sql.DB, sessionID string) (*Session, string, error) {
 	return &s, next, nil
 }
 
+// ConfigGet reads a config value from the meta table. Keys are stored
+// with a "config." prefix to avoid collisions with system meta.
+func ConfigGet(db *sql.DB, key string) (string, error) {
+	var val string
+	err := db.QueryRow(`SELECT value FROM meta WHERE key = ?`, "config."+key).Scan(&val)
+	if err != nil {
+		return "", fmt.Errorf("config %q not set", key)
+	}
+	return val, nil
+}
+
+// ConfigSet writes a config value to the meta table.
+func ConfigSet(db *sql.DB, key, value string) error {
+	_, err := db.Exec(`
+		INSERT INTO meta(key, value) VALUES(?, ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value
+	`, "config."+key, value)
+	return err
+}
+
+// SessionResponse is a turn in the session transcript (user prompt or assistant response).
+type SessionResponse struct {
+	ID               int64    `json:"id"`
+	SessionID        string   `json:"session_id"`
+	Role             string   `json:"role"` // "user" or "assistant"
+	ClaudeSessionID  *string  `json:"claude_session_id,omitempty"`
+	Response         string   `json:"response"`
+	ResultText       *string  `json:"result_text,omitempty"`
+	CostUSD          *float64 `json:"cost_usd,omitempty"`
+	NumTurns         *int     `json:"num_turns,omitempty"`
+	CreatedAt        int64    `json:"created_at"`
+}
+
+// WriteUserPrompt appends a user prompt turn to the session transcript.
+func WriteUserPrompt(db *sql.DB, sessionID, prompt string) (int64, error) {
+	if err := verifySession(db, sessionID); err != nil {
+		return 0, err
+	}
+	now := time.Now().UTC().Unix()
+	res, err := db.Exec(`
+		INSERT INTO transcript_log(session_id, role, response, result_text, created_at)
+		VALUES(?, 'user', ?, ?, ?)
+	`, sessionID, prompt, prompt, now)
+	if err != nil {
+		return 0, fmt.Errorf("write user prompt: %w", err)
+	}
+	return res.LastInsertId()
+}
+
+// WriteAssistantResponse appends a Claude Code assistant response to the session transcript.
+func WriteAssistantResponse(db *sql.DB, sessionID string, claudeSessionID *string, fullJSON string, resultText *string, costUSD *float64, numTurns *int) (int64, error) {
+	if err := verifySession(db, sessionID); err != nil {
+		return 0, err
+	}
+	now := time.Now().UTC().Unix()
+	res, err := db.Exec(`
+		INSERT INTO transcript_log(session_id, role, claude_session_id, response, result_text, cost_usd, num_turns, created_at)
+		VALUES(?, 'assistant', ?, ?, ?, ?, ?, ?)
+	`, sessionID, claudeSessionID, fullJSON, resultText, costUSD, numTurns, now)
+	if err != nil {
+		return 0, fmt.Errorf("write assistant response: %w", err)
+	}
+	return res.LastInsertId()
+}
+
+// LatestClaudeSessionID returns the most recent claude_session_id for a heb session.
+func LatestClaudeSessionID(db *sql.DB, sessionID string) (string, error) {
+	var id string
+	err := db.QueryRow(`
+		SELECT claude_session_id FROM transcript_log
+		WHERE session_id = ? AND role = 'assistant' AND claude_session_id IS NOT NULL
+		ORDER BY created_at DESC LIMIT 1
+	`, sessionID).Scan(&id)
+	if err == sql.ErrNoRows {
+		return "", fmt.Errorf("no claude session for %q", sessionID)
+	}
+	if err != nil {
+		return "", fmt.Errorf("latest claude session: %w", err)
+	}
+	return id, nil
+}
+
+// ListResponses returns all transcript turns for a session in chronological order.
+func ListResponses(db *sql.DB, sessionID string) ([]SessionResponse, error) {
+	rows, err := db.Query(`
+		SELECT id, session_id, role, claude_session_id, response, result_text, cost_usd, num_turns, created_at
+		FROM transcript_log
+		WHERE session_id = ?
+		ORDER BY created_at ASC
+	`, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("list responses: %w", err)
+	}
+	defer rows.Close()
+
+	var out []SessionResponse
+	for rows.Next() {
+		var r SessionResponse
+		if err := rows.Scan(&r.ID, &r.SessionID, &r.Role, &r.ClaudeSessionID, &r.Response, &r.ResultText, &r.CostUSD, &r.NumTurns, &r.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, nil
+}
+
+// verifySession checks that a session exists.
+func verifySession(db *sql.DB, sessionID string) error {
+	var status string
+	err := db.QueryRow(`SELECT status FROM sessions WHERE id = ?`, sessionID).Scan(&status)
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("session %q not found", sessionID)
+	}
+	if err != nil {
+		return fmt.Errorf("check session: %w", err)
+	}
+	return nil
+}
+
+// LatestActiveSession returns the most recently created active session.
+func LatestActiveSession(db *sql.DB) (*Session, error) {
+	var s Session
+	err := db.QueryRow(`
+		SELECT id, project, status, created_at, closed_at
+		FROM sessions WHERE status = 'active'
+		ORDER BY created_at DESC LIMIT 1
+	`).Scan(&s.ID, &s.Project, &s.Status, &s.CreatedAt, &s.ClosedAt)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("no active sessions")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("latest active session: %w", err)
+	}
+	return &s, nil
+}
+
 // CloseSession marks a session as complete.
 func CloseSession(db *sql.DB, sessionID string) error {
 	now := time.Now().UTC().Unix()

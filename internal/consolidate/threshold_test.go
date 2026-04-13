@@ -5,37 +5,37 @@ import "testing"
 func TestThreshold(t *testing.T) {
 	cases := []struct {
 		name     string
-		in       Contract4
+		in       LearnResult
 		wantMet  bool
 		wantSubs string // substring that must appear in reason
 	}{
 		{
 			name:     "corrections trigger",
-			in:       Contract4{CorrectionCount: 1, Completed: true},
+			in:       LearnResult{CorrectionCount: 1, Completed: true},
 			wantMet:  true,
 			wantSubs: "correction_count",
 		},
 		{
 			name:     "not completed triggers",
-			in:       Contract4{Completed: false},
+			in:       LearnResult{Completed: false},
 			wantMet:  true,
 			wantSubs: "completed == false",
 		},
 		{
 			name:     "peak intensity triggers",
-			in:       Contract4{Completed: true, PeakIntensity: 0.31},
+			in:       LearnResult{Completed: true, PeakIntensity: 0.31},
 			wantMet:  true,
 			wantSubs: "peak_intensity",
 		},
 		{
 			name:     "peak intensity at 0.3 does NOT trigger",
-			in:       Contract4{Completed: true, PeakIntensity: 0.30},
+			in:       LearnResult{Completed: true, PeakIntensity: 0.30},
 			wantMet:  false,
 			wantSubs: "no significant signal",
 		},
 		{
 			name: "files_touched triggers",
-			in: Contract4{
+			in: LearnResult{
 				Completed:      true,
 				Implementation: Implementation{FilesTouched: []string{"game/main.gd"}},
 			},
@@ -44,7 +44,7 @@ func TestThreshold(t *testing.T) {
 		},
 		{
 			name: "lessons trigger",
-			in: Contract4{
+			in: LearnResult{
 				Completed: true,
 				Lessons:   []Lesson{{Observation: "a·b·c", Confidence: 0.8}},
 			},
@@ -53,7 +53,7 @@ func TestThreshold(t *testing.T) {
 		},
 		{
 			name:     "empty understand session — no trigger",
-			in:       Contract4{Completed: true},
+			in:       LearnResult{Completed: true},
 			wantMet:  false,
 			wantSubs: "no significant signal",
 		},
