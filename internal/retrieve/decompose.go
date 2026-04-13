@@ -9,7 +9,7 @@ type Config struct {
 	GitResults      int    // default 3
 	GitCap          int    // default 10
 	BeadsResults    int    // default 2
-	MemoryLimit     int    // default 15
+	MemoryLimit     int    // default 16 (RecallLimit)
 	MinComponentLen int    // default 2
 	GitNoiseCap     int    // default 10
 	FileGlob        string // default "*.gd"
@@ -24,7 +24,7 @@ func DefaultConfig() Config {
 		GitResults:      3,
 		GitCap:          10,
 		BeadsResults:    2,
-		MemoryLimit:     15,
+		MemoryLimit:     16,
 		MinComponentLen: 2,
 		GitNoiseCap:     10,
 		FileGlob:        "*.gd",

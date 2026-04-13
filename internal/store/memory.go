@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -202,13 +203,25 @@ func DecayEdge(tx *sql.Tx, aID, bID string, delta float64) error {
 	return err
 }
 
+// RecallLimit is the hard cap on memories returned by Recall.
+// 16 ≈ 2× human working memory capacity (~7±2). Small enough that
+// token-budget trimming is unnecessary; large enough to carry context.
+const RecallLimit = 16
+
 // Recall ranks memories against a token set and expands via edges.
-// Scoring: weight + (1.0 per token hit in subject/predicate/object).
-// Spreading activation: for top seeds, fetch neighbours whose edge
-// strength >= edgeMin and add them with score = neighbour.weight * 0.5 * edge_strength.
+//
+// Scoring uses intersection bonus + IDF rarity weighting:
+//   - Each token hit is weighted by rarity: 1.0 / log2(1 + memoriesContainingToken)
+//   - Hits are combined with a quadratic intersection bonus: (Σ rarity)² / totalTokens
+//   - Final score: weight + intersectionBonus
+//
+// Spreading activation: for top seeds, fetch neighbours via edges and
+// add them with score = neighbour.weight * 0.5 + edge_strength * 0.5.
+//
+// Results are capped at RecallLimit (16). No token-budget trimming.
 func Recall(db *sql.DB, tokens []string, limit int) ([]Scored, error) {
-	if limit <= 0 {
-		limit = 10
+	if limit <= 0 || limit > RecallLimit {
+		limit = RecallLimit
 	}
 
 	rows, err := db.Query(`SELECT id, subject, predicate, object, weight, status, topic_tokens, created_at, updated_at FROM memories WHERE status = 'active'`)
@@ -217,18 +230,55 @@ func Recall(db *sql.DB, tokens []string, limit int) ([]Scored, error) {
 	}
 	defer rows.Close()
 
-	var scored []Scored
+	// First pass: load all active memories and count token frequency for IDF.
+	type candidate struct {
+		mem  Memory
+		hits []int // indices into tokens that matched
+	}
+	var all []candidate
+	tokenFreq := make([]int, len(tokens)) // how many memories contain each token
+
 	for rows.Next() {
 		var m Memory
 		if err := rows.Scan(&m.ID, &m.Subject, &m.Predicate, &m.Object, &m.Weight, &m.Status, &m.TopicTokens, &m.CreatedAt, &m.UpdatedAt); err != nil {
 			return nil, err
 		}
-		hits := tokenHits(tokens, m.Subject, m.Predicate, m.Object)
-		if hits == 0 && len(tokens) > 0 {
+		hay := strings.ToLower(m.Subject + " " + m.Predicate + " " + m.Object)
+		var hits []int
+		for i, t := range tokens {
+			tt := strings.ToLower(strings.TrimSpace(t))
+			if tt != "" && strings.Contains(hay, tt) {
+				hits = append(hits, i)
+				tokenFreq[i]++
+			}
+		}
+		if len(hits) == 0 && len(tokens) > 0 {
 			continue
 		}
-		score := m.Weight + float64(hits)
-		scored = append(scored, Scored{Memory: m, Tuple: m.TupleString(), Score: score, Source: "match"})
+		all = append(all, candidate{mem: m, hits: hits})
+	}
+
+	// Compute IDF weights: rare tokens score higher.
+	idf := make([]float64, len(tokens))
+	for i, freq := range tokenFreq {
+		idf[i] = 1.0 / math.Log2(float64(2+freq)) // +2 avoids div-by-zero and log(1)=0
+	}
+
+	// Second pass: score with intersection bonus.
+	totalTokens := float64(len(tokens))
+	if totalTokens == 0 {
+		totalTokens = 1
+	}
+
+	scored := make([]Scored, 0, len(all))
+	for _, c := range all {
+		var raritySum float64
+		for _, idx := range c.hits {
+			raritySum += idf[idx]
+		}
+		intersectionBonus := (raritySum * raritySum) / totalTokens
+		score := c.mem.Weight + intersectionBonus
+		scored = append(scored, Scored{Memory: c.mem, Tuple: c.mem.TupleString(), Score: score, Source: "match"})
 	}
 
 	sort.Slice(scored, func(i, j int) bool { return scored[i].Score > scored[j].Score })
@@ -273,29 +323,32 @@ func Recall(db *sql.DB, tokens []string, limit int) ([]Scored, error) {
 		nrows.Close()
 	}
 	sort.Slice(neighbours, func(i, j int) bool { return neighbours[i].Score > neighbours[j].Score })
-	if len(neighbours) > limit {
-		neighbours = neighbours[:limit]
+
+	// Cap total (match + edge) at RecallLimit.
+	combined := append(scored, neighbours...)
+	if len(combined) > limit {
+		// Keep hard constraints, then top-scored.
+		var pinned, rest []Scored
+		for _, s := range combined {
+			if strings.HasPrefix(s.Subject, "!") {
+				pinned = append(pinned, s)
+			} else {
+				rest = append(rest, s)
+			}
+		}
+		sort.Slice(rest, func(i, j int) bool { return rest[i].Score > rest[j].Score })
+		remaining := limit - len(pinned)
+		if remaining < 0 {
+			remaining = 0
+		}
+		if len(rest) > remaining {
+			rest = rest[:remaining]
+		}
+		combined = append(pinned, rest...)
 	}
-	return append(scored, neighbours...), nil
+	return combined, nil
 }
 
-func tokenHits(tokens []string, fields ...string) int {
-	if len(tokens) == 0 {
-		return 0
-	}
-	hay := strings.ToLower(strings.Join(fields, " "))
-	hits := 0
-	for _, t := range tokens {
-		tt := strings.ToLower(strings.TrimSpace(t))
-		if tt == "" {
-			continue
-		}
-		if strings.Contains(hay, tt) {
-			hits++
-		}
-	}
-	return hits
-}
 
 func nullIfEmpty(s string) any {
 	if s == "" {
