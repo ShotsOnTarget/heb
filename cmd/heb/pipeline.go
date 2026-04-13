@@ -2,12 +2,14 @@ package main
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 
@@ -54,7 +56,7 @@ func runPipeline(args []string) int {
 		}
 	}
 
-	// Persist transcript (best-effort)
+	// Persist transcript + execute_meta (best-effort)
 	root, err := store.RepoRoot()
 	if err == nil {
 		s, err := store.Open(root)
@@ -84,6 +86,11 @@ func runPipeline(args []string) int {
 				fmt.Fprintf(os.Stderr, "heb: store response: %v\n", writeErr)
 			} else {
 				fmt.Fprintf(os.Stderr, "transcript stored: claude_session=%s\n", result.ClaudeSessionID)
+			}
+			// Persist file operations as execute_meta (merge with existing)
+			if len(result.FilesTouched) > 0 || len(result.FilesRead) > 0 {
+				mergeExecuteMeta(s.DB(), sense.SessionID, result.FilesTouched, result.FilesRead)
+				fmt.Fprintf(os.Stderr, "files touched: %s\n", strings.Join(result.FilesTouched, ", "))
 			}
 		}
 	}
@@ -232,25 +239,31 @@ func senseViaOpenAI(apiKey, systemPrompt, userPrompt string) (string, error) {
 	return apiResp.Choices[0].Message.Content, nil
 }
 
-// executeResult holds the parsed output from a claude --print --output-format json run.
+// executeResult holds the parsed output from a claude --print run.
 type executeResult struct {
-	ClaudeSessionID string  `json:"claude_session_id"`
-	ResultText      string  `json:"result_text"`
-	CostUSD         float64 `json:"cost_usd"`
-	NumTurns        int     `json:"num_turns"`
-	FullJSON        string  `json:"full_json"` // raw JSON response
+	ClaudeSessionID string   `json:"claude_session_id"`
+	ResultText      string   `json:"result_text"`
+	CostUSD         float64  `json:"cost_usd"`
+	NumTurns        int      `json:"num_turns"`
+	FullJSON        string   `json:"full_json"`      // raw output
+	FilesTouched    []string `json:"files_touched"`   // files edited/written (from tool_use)
+	FilesRead       []string `json:"files_read"`      // files read/grepped (from tool_use)
 }
 
-// executeViaClaude hands the user's prompt to claude --print --output-format json
-// and captures the session ID, transcript, and result.
+const executeSystemPrompt = `If the prompt is ambiguous about design intent — what something should look like, how it should behave, or what data it should show — stop and ask clarifying questions before implementing. Keep questions specific and few (max 3). A 30-second answer from the developer saves a wrong implementation.
+
+Do not ask about things you can determine by reading the codebase. Only ask about decisions that require the developer's input.`
+
+// executeViaClaude hands the user's prompt to claude --print --output-format stream-json
+// and captures the session ID, transcript, result, and file operations.
 func executeViaClaude(userPrompt, reflectJSON string) (*executeResult, error) {
 	combined := fmt.Sprintf("%s\n\n## Memory context\n\n%s", userPrompt, reflectJSON)
-	return runClaudePrint([]string{"--print", "--output-format", "json", "--allowedTools", "Read,Write,Edit,Grep,Glob,Bash"}, combined)
+	return runClaudePrint([]string{"--print", "--output-format", "stream-json", "--system-prompt", executeSystemPrompt, "--allowedTools", "Read,Write,Edit,Grep,Glob,Bash"}, combined)
 }
 
 // resumeViaClaude resumes an existing Claude session with a new prompt.
 func resumeViaClaude(claudeSessionID, userPrompt string) (*executeResult, error) {
-	return runClaudePrint([]string{"--print", "--output-format", "json", "--allowedTools", "Read,Write,Edit,Grep,Glob,Bash", "--resume", claudeSessionID}, userPrompt)
+	return runClaudePrint([]string{"--print", "--output-format", "stream-json", "--allowedTools", "Read,Write,Edit,Grep,Glob,Bash", "--resume", claudeSessionID}, userPrompt)
 }
 
 // runClaude executes claude with the given args and stdin, parsing the JSON response.
@@ -261,35 +274,53 @@ func runClaudePrint(claudeArgs []string, stdin string) (*executeResult, error) {
 	cmd.Dir = cwd
 	cmd.Env = filterEnv(os.Environ(), "CLAUDECODE")
 	cmd.Stdin = strings.NewReader(stdin)
-	cmd.Stderr = os.Stderr
 
-	var stdout bytes.Buffer
+	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
 
 	fmt.Fprintln(os.Stderr, "executing...")
 
 	if err := cmd.Run(); err != nil {
+		// Print any stderr/stdout from claude for debugging
+		if se := stderr.String(); se != "" {
+			fmt.Fprintf(os.Stderr, "claude stderr: %s\n", se)
+		}
+		if so := stdout.String(); so != "" {
+			fmt.Fprintf(os.Stderr, "claude stdout: %s\n", so)
+		}
 		return nil, fmt.Errorf("claude: %w", err)
+	}
+
+	// Relay claude stderr (progress messages etc.)
+	if se := stderr.String(); se != "" {
+		fmt.Fprint(os.Stderr, se)
 	}
 
 	return parseClaudeJSON(stdout.String()), nil
 }
 
-// parseClaudeJSON extracts session ID, result text, cost, and turns from
-// claude --output-format json output.
+// parseClaudeJSON extracts session ID, result text, cost, turns, and file
+// operations from claude output. Handles both JSON array and stream-json
+// (NDJSON, one JSON object per line) formats.
 func parseClaudeJSON(raw string) *executeResult {
 	result := &executeResult{FullJSON: raw}
 
+	// Collect all JSON messages — either from array or NDJSON lines
 	var messages []json.RawMessage
 	if err := json.Unmarshal([]byte(raw), &messages); err != nil {
-		var single map[string]any
-		if err2 := json.Unmarshal([]byte(raw), &single); err2 == nil {
-			messages = []json.RawMessage{json.RawMessage(raw)}
-		} else {
-			result.ResultText = raw
-			return result
+		// Try NDJSON (stream-json): one JSON object per line
+		for _, line := range strings.Split(raw, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			messages = append(messages, json.RawMessage(line))
 		}
 	}
+
+	touchedSet := make(map[string]bool)
+	readSet := make(map[string]bool)
 
 	for _, msg := range messages {
 		var m struct {
@@ -300,8 +331,15 @@ func parseClaudeJSON(raw string) *executeResult {
 			NumTurns  int     `json:"num_turns"`
 			Message   *struct {
 				Content []struct {
-					Type string `json:"type"`
-					Text string `json:"text"`
+					Type  string `json:"type"`
+					Text  string `json:"text"`
+					Name  string `json:"name"`
+					Input struct {
+						FilePath string `json:"file_path"`
+						Command  string `json:"command"`
+						Pattern  string `json:"pattern"`
+						Path     string `json:"path"`
+					} `json:"input"`
 				} `json:"content"`
 			} `json:"message"`
 		}
@@ -322,9 +360,42 @@ func parseClaudeJSON(raw string) *executeResult {
 				if c.Type == "text" && result.ResultText == "" {
 					result.ResultText = c.Text
 				}
+				if c.Type == "tool_use" {
+					fp := c.Input.FilePath
+					switch c.Name {
+					case "Edit", "Write":
+						if fp != "" {
+							touchedSet[fp] = true
+							readSet[fp] = true
+						}
+					case "Read":
+						if fp != "" {
+							readSet[fp] = true
+						}
+					case "Grep", "Glob":
+						// Path for search tools
+						p := c.Input.Path
+						if p == "" {
+							p = c.Input.FilePath
+						}
+						if p != "" {
+							readSet[p] = true
+						}
+					}
+				}
 			}
 		}
 	}
+
+	// Convert sets to sorted slices
+	for f := range touchedSet {
+		result.FilesTouched = append(result.FilesTouched, f)
+	}
+	sort.Strings(result.FilesTouched)
+	for f := range readSet {
+		result.FilesRead = append(result.FilesRead, f)
+	}
+	sort.Strings(result.FilesRead)
 
 	return result
 }
@@ -369,6 +440,14 @@ func runResume(args []string) int {
 	// Find the Claude session to resume
 	claudeSessionID, err := store.LatestClaudeSessionID(s.DB(), sessionID)
 	if err != nil {
+		// No Claude session — check if this is a clarification answer
+		// (reflect done but no execute yet)
+		senseJSON, sErr := store.ReadContract(s.DB(), sessionID, "sense")
+		reflectJSON, rErr := store.ReadContract(s.DB(), sessionID, "reflect")
+		if sErr == nil && rErr == nil {
+			fmt.Fprintf(os.Stderr, "clarification received for session %s\n", sessionID)
+			return resumeWithClarification(s, sessionID, senseJSON, reflectJSON, prompt)
+		}
 		fmt.Fprintf(os.Stderr, "heb: no claude session to resume for %s: %v\n", sessionID, err)
 		return 1
 	}
@@ -417,6 +496,12 @@ func runResume(args []string) int {
 		fmt.Fprintf(os.Stderr, "transcript stored: claude_session=%s\n", result.ClaudeSessionID)
 	}
 
+	// Persist file operations as execute_meta (merge with existing)
+	if len(result.FilesTouched) > 0 || len(result.FilesRead) > 0 {
+		mergeExecuteMeta(s.DB(), sessionID, result.FilesTouched, result.FilesRead)
+		fmt.Fprintf(os.Stderr, "files touched: %s\n", strings.Join(result.FilesTouched, ", "))
+	}
+
 	return 0
 }
 
@@ -457,6 +542,123 @@ func stripJSONFences(s string) string {
 		s = strings.TrimSpace(s)
 	}
 	return s
+}
+
+// resumeWithClarification handles the case where reflect produced questions
+// and the user is answering them before execute. It runs executeViaClaude
+// with the original prompt + reflect context + clarification answers.
+func resumeWithClarification(s *store.SQLiteStore, sessionID, senseJSON, reflectJSON, answers string) int {
+	var sense struct {
+		Raw string `json:"raw"`
+	}
+	if err := json.Unmarshal([]byte(senseJSON), &sense); err != nil {
+		fmt.Fprintf(os.Stderr, "heb: parse sense: %v\n", err)
+		return 1
+	}
+
+	// Store the clarification answers as a user turn
+	store.WriteUserPrompt(s.DB(), sessionID, answers)
+
+	// Build combined context: original prompt + clarification + memory context
+	combined := fmt.Sprintf("%s\n\n## Clarification from developer\n\n%s\n\n## Memory context\n\n%s",
+		sense.Raw, answers, reflectJSON)
+
+	fmt.Fprintln(os.Stderr, "executing...")
+
+	result, err := runClaudePrint([]string{"--print", "--output-format", "stream-json", "--system-prompt", executeSystemPrompt, "--allowedTools", "Read,Write,Edit,Grep,Glob,Bash"}, combined)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "heb: %v\n", err)
+		return 1
+	}
+
+	// Print the result text to stdout
+	if result.ResultText != "" {
+		fmt.Fprint(os.Stdout, result.ResultText)
+		if !strings.HasSuffix(result.ResultText, "\n") {
+			fmt.Fprintln(os.Stdout)
+		}
+	}
+
+	// Persist transcript
+	var claudeID *string
+	if result.ClaudeSessionID != "" {
+		claudeID = &result.ClaudeSessionID
+	}
+	var resultText *string
+	if result.ResultText != "" {
+		resultText = &result.ResultText
+	}
+	var costUSD *float64
+	if result.CostUSD > 0 {
+		costUSD = &result.CostUSD
+	}
+	var numTurns *int
+	if result.NumTurns > 0 {
+		numTurns = &result.NumTurns
+	}
+	_, writeErr := store.WriteAssistantResponse(s.DB(), sessionID, claudeID, result.FullJSON, resultText, costUSD, numTurns)
+	if writeErr != nil {
+		fmt.Fprintf(os.Stderr, "heb: store response: %v\n", writeErr)
+	} else {
+		fmt.Fprintf(os.Stderr, "transcript stored: claude_session=%s\n", result.ClaudeSessionID)
+	}
+
+	// Persist file operations as execute_meta (merge with existing)
+	if len(result.FilesTouched) > 0 || len(result.FilesRead) > 0 {
+		mergeExecuteMeta(s.DB(), sessionID, result.FilesTouched, result.FilesRead)
+		fmt.Fprintf(os.Stderr, "files touched: %s\n", strings.Join(result.FilesTouched, ", "))
+	}
+
+	return 0
+}
+
+// mergeExecuteMeta reads the existing execute_meta contract (if any),
+// unions the file sets with the new values, and writes back.
+func mergeExecuteMeta(db *sql.DB, sessionID string, touched, read []string) {
+	touchedSet := make(map[string]bool)
+	readSet := make(map[string]bool)
+
+	// Load existing
+	existing, err := store.ReadContract(db, sessionID, "execute_meta")
+	if err == nil {
+		var meta struct {
+			FilesTouched []string `json:"files_touched"`
+			FilesRead    []string `json:"files_read"`
+		}
+		if json.Unmarshal([]byte(existing), &meta) == nil {
+			for _, f := range meta.FilesTouched {
+				touchedSet[f] = true
+			}
+			for _, f := range meta.FilesRead {
+				readSet[f] = true
+			}
+		}
+	}
+
+	// Merge new
+	for _, f := range touched {
+		touchedSet[f] = true
+	}
+	for _, f := range read {
+		readSet[f] = true
+	}
+
+	// Convert to sorted slices
+	var allTouched, allRead []string
+	for f := range touchedSet {
+		allTouched = append(allTouched, f)
+	}
+	sort.Strings(allTouched)
+	for f := range readSet {
+		allRead = append(allRead, f)
+	}
+	sort.Strings(allRead)
+
+	meta, _ := json.Marshal(map[string]any{
+		"files_touched": allTouched,
+		"files_read":    allRead,
+	})
+	store.WriteContract(db, sessionID, "execute_meta", string(meta))
 }
 
 // filterEnv returns a copy of env with the named variable removed.

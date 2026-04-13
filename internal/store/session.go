@@ -25,7 +25,7 @@ type SessionContract struct {
 }
 
 // ValidSteps are the pipeline steps in order.
-var ValidSteps = []string{"sense", "recall", "reflect", "learn", "consolidate"}
+var ValidSteps = []string{"sense", "recall", "reflect", "execute_meta", "learn", "consolidate"}
 
 func isValidStep(step string) bool {
 	for _, s := range ValidSteps {
