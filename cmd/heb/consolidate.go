@@ -165,7 +165,7 @@ func applyMemoryDeltas(tx *sql.Tx, p consolidate.Payload, result *consolidate.Re
 			tx,
 			md.Subject, md.Predicate, md.Object,
 			md.Event, md.Reason,
-			p.SessionID, p.BeadID,
+			p.SessionID, p.BeadID, p.TopicTokens,
 			md.DeltaNew, md.DeltaReinforce,
 		)
 		if err != nil {
@@ -213,57 +213,99 @@ func applyEpisode(tx *sql.Tx, p consolidate.Payload, result *consolidate.Result)
 	return nil
 }
 
-// applyEdgeDecay weakens edges that fired via spreading activation but
-// whose target memories were not confirmed by learn. Only runs for act
-// sessions (files_touched > 0 or correction_count > 0). Only decays
-// young edges (co_activation_count < EdgeEstablishThreshold).
-func applyEdgeDecay(tx *sql.Tx, db *sql.DB, lr*consolidate.LearnResult, cfg *consolidate.Config, result *consolidate.Result) error {
+// applyEdgeDecay weakens edges via two paths:
+//
+//  1. Unconfirmed recall: edges that fired via spreading activation but
+//     whose target memories were not confirmed by a lesson. Only runs
+//     for act sessions (files_touched > 0 or correction_count > 0).
+//
+//  2. Prediction contradiction: edges whose source tuples contributed to
+//     a prediction that was wrong. Runs regardless of session type —
+//     a wrong prediction is direct evidence the edge is misleading.
+//     Uses 2× EdgeDecayRate for the stronger signal.
+//
+// Both paths only decay young edges (co_activation_count < EdgeEstablishThreshold).
+func applyEdgeDecay(tx *sql.Tx, db *sql.DB, lr *consolidate.LearnResult, cfg *consolidate.Config, result *consolidate.Result) error {
 	if cfg.EdgeDecayRate <= 0 {
 		return nil
 	}
-	if len(lr.RecalledViaEdges) == 0 {
-		return nil
-	}
-	if !result.ThresholdMet {
-		return nil
-	}
-	// Only decay in act sessions.
-	if len(lr.Implementation.FilesTouched) == 0 && lr.CorrectionCount == 0 {
-		return nil
-	}
 
-	// Build set of written lesson tuples for fast lookup.
-	writtenSet := make(map[string]bool, len(lr.Lessons))
-	for _, l := range lr.Lessons {
-		writtenSet[l.Observation] = true
-	}
+	// Track which edges we've already decayed to avoid double-penalising.
+	decayed := make(map[[2]string]bool)
 
-	for _, tuple := range lr.RecalledViaEdges {
-		if writtenSet[tuple] {
-			continue
+	// Path 1: Unconfirmed edge recalls (act sessions only).
+	if len(lr.RecalledViaEdges) > 0 && result.ThresholdMet &&
+		(len(lr.Implementation.FilesTouched) > 0 || lr.CorrectionCount > 0) {
+
+		writtenSet := make(map[string]bool, len(lr.Lessons))
+		for _, l := range lr.Lessons {
+			writtenSet[l.Observation] = true
 		}
-		// Parse the tuple to get memory ID.
-		id := tupleToMemoryID(tuple)
-		if id == "" {
-			continue
-		}
-		edges, err := store.EdgesFor(db, id)
-		if err != nil {
-			result.Errors = append(result.Errors, fmt.Sprintf("edge decay query %s: %v", tuple, err))
-			continue
-		}
-		for _, e := range edges {
-			if e.CoActivationCount >= cfg.EdgeEstablishThreshold {
+
+		for _, tuple := range lr.RecalledViaEdges {
+			if writtenSet[tuple] {
 				continue
 			}
-			if err := store.DecayEdge(tx, e.AID, e.BID, -cfg.EdgeDecayRate); err != nil {
-				result.Errors = append(result.Errors, fmt.Sprintf("edge decay %s: %v", tuple, err))
-				continue
-			}
-			result.EdgesDecayed++
+			decayEdgesForTuple(tx, db, tuple, -cfg.EdgeDecayRate, cfg.EdgeEstablishThreshold, decayed, result)
 		}
 	}
+
+	// Path 2: Prediction contradictions (any session type).
+	if lr.PredictionReconciliation != nil && !lr.PredictionReconciliation.ColdStart {
+		// Collect edge-sourced recall tuples for intersection.
+		edgeRecalled := make(map[string]bool, len(lr.RecalledViaEdges))
+		for _, t := range lr.RecalledViaEdges {
+			edgeRecalled[t] = true
+		}
+
+		for _, elem := range lr.PredictionReconciliation.Elements {
+			if elem.Event != "prediction_contradicted" {
+				continue
+			}
+			for _, tuple := range elem.SourceTuples {
+				// Only decay if this tuple was delivered via an edge.
+				// Direct-match memories are not edge failures.
+				if !edgeRecalled[tuple] {
+					continue
+				}
+				decayEdgesForTuple(tx, db, tuple, -cfg.EdgeDecayRate*2, cfg.EdgeEstablishThreshold, decayed, result)
+			}
+		}
+	}
+
 	return nil
+}
+
+// decayEdgesForTuple decays all young edges involving the given tuple.
+// Skips edges already in the decayed set to avoid double-penalising.
+func decayEdgesForTuple(tx *sql.Tx, db *sql.DB, tuple string, delta float64, threshold int, decayed map[[2]string]bool, result *consolidate.Result) {
+	id := tupleToMemoryID(tuple)
+	if id == "" {
+		return
+	}
+	edges, err := store.EdgesFor(db, id)
+	if err != nil {
+		result.Errors = append(result.Errors, fmt.Sprintf("edge decay query %s: %v", tuple, err))
+		return
+	}
+	for _, e := range edges {
+		if e.CoActivationCount >= threshold {
+			continue
+		}
+		key := [2]string{e.AID, e.BID}
+		if e.AID > e.BID {
+			key = [2]string{e.BID, e.AID}
+		}
+		if decayed[key] {
+			continue
+		}
+		if err := store.DecayEdge(tx, e.AID, e.BID, delta); err != nil {
+			result.Errors = append(result.Errors, fmt.Sprintf("edge decay %s: %v", tuple, err))
+			continue
+		}
+		decayed[key] = true
+		result.EdgesDecayed++
+	}
 }
 
 // tupleToMemoryID splits a "subject·predicate·object" string and

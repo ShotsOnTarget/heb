@@ -64,11 +64,34 @@ type LearnResult struct {
 	Completed        bool            `json:"completed"`
 	Decisions        []json.RawMessage `json:"decisions,omitempty"`
 	Lessons          []Lesson        `json:"lessons"`
-	RecalledViaEdges FlexStringSlice `json:"recalled_via_edges,omitempty"`
+	RecalledViaEdges          FlexStringSlice          `json:"recalled_via_edges,omitempty"`
+	PredictionReconciliation *PredictionReconciliation `json:"prediction_reconciliation,omitempty"`
 
 	// Raw holds the full original payload so the episode row can
 	// preserve everything, including fields the CLI does not interpret.
 	Raw json.RawMessage `json:"-"`
+}
+
+// PredictionReconciliation is the learn contract's reconciliation of
+// reflect predictions against what actually happened.
+type PredictionReconciliation struct {
+	ColdStart    bool                        `json:"cold_start"`
+	Elements     []PredictionReconcileElement `json:"elements"`
+	MatchedCount int                          `json:"matched_count"`
+	TotalCount   int                          `json:"total_count"`
+	Overall      string                       `json:"overall"`
+	Summary      string                       `json:"summary"`
+}
+
+// PredictionReconcileElement is one predicted-vs-actual comparison.
+type PredictionReconcileElement struct {
+	Element      string          `json:"element"`
+	Predicted    string          `json:"predicted"`
+	Actual       string          `json:"actual"`
+	Result       string          `json:"result"` // "matched" | "partial" | "missed" | "wrong"
+	SourceTuples FlexStringSlice `json:"source_tuples"`
+	Event        string          `json:"event"` // "prediction_confirmed" | "prediction_contradicted" | ""
+	Lesson       string          `json:"lesson,omitempty"`
 }
 
 // FlexStringSlice unmarshals both ["s·p·o"] and [["s","p","o"]] into []string.
@@ -160,13 +183,14 @@ type SkippedTuple struct {
 // skipped) produced by the translator. This is the shape cmd/heb
 // applies to the store. It is also the shape accepted by --raw mode.
 type Payload struct {
-	SessionID string          `json:"session_id"`
-	Project   string          `json:"project"`
-	BeadID    string          `json:"bead_id,omitempty"`
-	Memories  []MemoryDelta   `json:"memories"`
-	Edges     []EdgeDelta     `json:"edges"`
-	Episode   *EpisodePayload `json:"episode,omitempty"`
-	Skipped   []SkippedTuple  `json:"skipped,omitempty"`
+	SessionID   string          `json:"session_id"`
+	Project     string          `json:"project"`
+	BeadID      string          `json:"bead_id,omitempty"`
+	TopicTokens string          `json:"topic_tokens,omitempty"` // comma-separated sense tokens for memory tagging
+	Memories    []MemoryDelta   `json:"memories"`
+	Edges       []EdgeDelta     `json:"edges"`
+	Episode     *EpisodePayload `json:"episode,omitempty"`
+	Skipped     []SkippedTuple  `json:"skipped,omitempty"`
 }
 
 // EpisodePayload mirrors the shape the store writes verbatim into the

@@ -12,14 +12,15 @@ import (
 
 // Memory is a weighted subject-predicate-object tuple.
 type Memory struct {
-	ID        string  `json:"id"`
-	Subject   string  `json:"subject"`
-	Predicate string  `json:"predicate"`
-	Object    string  `json:"object"`
-	Weight    float64 `json:"weight"`
-	Status    string  `json:"status"`
-	CreatedAt int64   `json:"created_at"`
-	UpdatedAt int64   `json:"updated_at"`
+	ID          string  `json:"id"`
+	Subject     string  `json:"subject"`
+	Predicate   string  `json:"predicate"`
+	Object      string  `json:"object"`
+	Weight      float64 `json:"weight"`
+	Status      string  `json:"status"`
+	TopicTokens string  `json:"topic_tokens,omitempty"` // comma-separated sense tokens from the session that created/last reinforced this memory
+	CreatedAt   int64   `json:"created_at"`
+	UpdatedAt   int64   `json:"updated_at"`
 }
 
 // Scored is a memory with a recall score attached.
@@ -53,7 +54,7 @@ func MemoryID(subject, predicate, object string) string {
 // "created". If the memory already exists, deltaReinforce is applied
 // and the passed kind is used as-is. Callers that want a single delta
 // regardless of existence can pass the same value for both.
-func ApplyMemoryEvent(tx *sql.Tx, subject, predicate, object, kind, reason, sessionID, beadID string, deltaNew, deltaReinforce float64) (id string, newWeight float64, wasNew bool, err error) {
+func ApplyMemoryEvent(tx *sql.Tx, subject, predicate, object, kind, reason, sessionID, beadID, topicTokens string, deltaNew, deltaReinforce float64) (id string, newWeight float64, wasNew bool, err error) {
 	id = MemoryID(subject, predicate, object)
 	now := time.Now().UTC().Unix()
 
@@ -74,9 +75,9 @@ func ApplyMemoryEvent(tx *sql.Tx, subject, predicate, object, kind, reason, sess
 		delta = deltaNew
 		eventKind = "created"
 		_, err = tx.Exec(`
-			INSERT INTO memories(id, subject, predicate, object, weight, status, created_at, updated_at)
-			VALUES(?, ?, ?, ?, MAX(0, ?), 'active', ?, ?)
-		`, id, subject, predicate, object, delta, now, now)
+			INSERT INTO memories(id, subject, predicate, object, weight, status, topic_tokens, created_at, updated_at)
+			VALUES(?, ?, ?, ?, MAX(0, ?), 'active', ?, ?, ?)
+		`, id, subject, predicate, object, delta, topicTokens, now, now)
 		if err != nil {
 			return "", 0, false, fmt.Errorf("insert memory: %w", err)
 		}
@@ -87,9 +88,9 @@ func ApplyMemoryEvent(tx *sql.Tx, subject, predicate, object, kind, reason, sess
 	} else {
 		_, err = tx.Exec(`
 			UPDATE memories
-			SET weight = MAX(0, weight + ?), updated_at = ?
+			SET weight = MAX(0, weight + ?), topic_tokens = ?, updated_at = ?
 			WHERE id = ?
-		`, delta, now, id)
+		`, delta, topicTokens, now, id)
 		if err != nil {
 			return "", 0, false, fmt.Errorf("update memory: %w", err)
 		}
@@ -210,7 +211,7 @@ func Recall(db *sql.DB, tokens []string, limit int) ([]Scored, error) {
 		limit = 10
 	}
 
-	rows, err := db.Query(`SELECT id, subject, predicate, object, weight, status, created_at, updated_at FROM memories WHERE status = 'active'`)
+	rows, err := db.Query(`SELECT id, subject, predicate, object, weight, status, topic_tokens, created_at, updated_at FROM memories WHERE status = 'active'`)
 	if err != nil {
 		return nil, fmt.Errorf("scan memories: %w", err)
 	}
@@ -219,7 +220,7 @@ func Recall(db *sql.DB, tokens []string, limit int) ([]Scored, error) {
 	var scored []Scored
 	for rows.Next() {
 		var m Memory
-		if err := rows.Scan(&m.ID, &m.Subject, &m.Predicate, &m.Object, &m.Weight, &m.Status, &m.CreatedAt, &m.UpdatedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.Subject, &m.Predicate, &m.Object, &m.Weight, &m.Status, &m.TopicTokens, &m.CreatedAt, &m.UpdatedAt); err != nil {
 			return nil, err
 		}
 		hits := tokenHits(tokens, m.Subject, m.Predicate, m.Object)
@@ -243,7 +244,7 @@ func Recall(db *sql.DB, tokens []string, limit int) ([]Scored, error) {
 	var neighbours []Scored
 	for _, s := range scored {
 		nrows, err := db.Query(`
-			SELECT m.id, m.subject, m.predicate, m.object, m.weight, m.status, m.created_at, m.updated_at, e.strength
+			SELECT m.id, m.subject, m.predicate, m.object, m.weight, m.status, m.topic_tokens, m.created_at, m.updated_at, e.strength
 			FROM edges e
 			JOIN memories m ON m.id = CASE WHEN e.a_id = ? THEN e.b_id ELSE e.a_id END
 			WHERE (e.a_id = ? OR e.b_id = ?) AND e.strength > 0 AND m.status = 'active'
@@ -254,7 +255,7 @@ func Recall(db *sql.DB, tokens []string, limit int) ([]Scored, error) {
 		for nrows.Next() {
 			var m Memory
 			var strength float64
-			if err := nrows.Scan(&m.ID, &m.Subject, &m.Predicate, &m.Object, &m.Weight, &m.Status, &m.CreatedAt, &m.UpdatedAt, &strength); err != nil {
+			if err := nrows.Scan(&m.ID, &m.Subject, &m.Predicate, &m.Object, &m.Weight, &m.Status, &m.TopicTokens, &m.CreatedAt, &m.UpdatedAt, &strength); err != nil {
 				nrows.Close()
 				return nil, err
 			}
@@ -360,7 +361,7 @@ func DreamSeeds(db *sql.DB, limit int) ([]Memory, error) {
 	}
 	rows, err := db.Query(`
 		SELECT m.id, m.subject, m.predicate, m.object, m.weight, m.status,
-		       m.created_at, m.updated_at
+		       m.topic_tokens, m.created_at, m.updated_at
 		FROM memories m
 		LEFT JOIN edges e ON m.id = e.a_id OR m.id = e.b_id
 		LEFT JOIN (
@@ -380,7 +381,7 @@ func DreamSeeds(db *sql.DB, limit int) ([]Memory, error) {
 	var result []Memory
 	for rows.Next() {
 		var m Memory
-		if err := rows.Scan(&m.ID, &m.Subject, &m.Predicate, &m.Object, &m.Weight, &m.Status, &m.CreatedAt, &m.UpdatedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.Subject, &m.Predicate, &m.Object, &m.Weight, &m.Status, &m.TopicTokens, &m.CreatedAt, &m.UpdatedAt); err != nil {
 			return nil, err
 		}
 		result = append(result, m)

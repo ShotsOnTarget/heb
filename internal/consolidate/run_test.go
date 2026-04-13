@@ -31,8 +31,8 @@ func TestRunHappyPath(t *testing.T) {
 		Project:   "p",
 		Completed: true,
 		Lessons: []Lesson{
-			{Observation: "a·p·x", Confidence: 0.80},
-			{Observation: "b·p·x", Confidence: 0.80},
+			{Observation: "drone_stats·defined_in·main", Confidence: 0.80},
+			{Observation: "drone_pool·contains·types", Confidence: 0.80},
 		},
 	}
 	r := Run(c, cfg)

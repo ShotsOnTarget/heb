@@ -18,7 +18,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const SchemaVersion = 4
+const SchemaVersion = 5
 
 // Store is the memory store interface. Commands depend on this, not on
 // any concrete backend.
@@ -134,6 +134,8 @@ func Open(repoRoot string) (*SQLiteStore, error) {
 	db.Exec(`ALTER TABLE edges ADD COLUMN co_activation_count INTEGER NOT NULL DEFAULT 0`)
 	// v5: add role to transcript_log for existing databases.
 	db.Exec(`ALTER TABLE transcript_log ADD COLUMN role TEXT NOT NULL DEFAULT 'assistant'`)
+	// v6: add topic_tokens to memories for edge filtering and scoped decay.
+	db.Exec(`ALTER TABLE memories ADD COLUMN topic_tokens TEXT NOT NULL DEFAULT ''`)
 	// Bump schema version if behind.
 	if _, err := db.Exec(
 		`UPDATE meta SET value = ? WHERE key = 'schema_version' AND CAST(value AS INTEGER) < ?`,
@@ -194,6 +196,7 @@ CREATE TABLE IF NOT EXISTS memories (
     object       TEXT NOT NULL,
     weight       REAL NOT NULL DEFAULT 0,
     status       TEXT NOT NULL DEFAULT 'active',
+    topic_tokens TEXT NOT NULL DEFAULT '',
     created_at   INTEGER NOT NULL,
     updated_at   INTEGER NOT NULL
 );

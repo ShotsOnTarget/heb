@@ -1,6 +1,9 @@
 package consolidate
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // Run is the pure entry point: take a parsed contract:learn>consolidate plus a Config
 // and produce a Result. No filesystem, no sqlite. The caller (cmd/heb)
@@ -17,15 +20,18 @@ import "encoding/json"
 func Run(c LearnResult, cfg Config) Result {
 	met, reason := checkThreshold(c)
 
+	topicTokens := strings.Join(c.Tokens, ",")
+
 	result := Result{
 		SessionID:       c.SessionID,
 		Project:         c.Project,
 		ThresholdMet:    met,
 		ThresholdReason: reason,
 		Payload: Payload{
-			SessionID: c.SessionID,
-			Project:   c.Project,
-			BeadID:    c.BeadID,
+			SessionID:   c.SessionID,
+			Project:     c.Project,
+			BeadID:      c.BeadID,
+			TopicTokens: topicTokens,
 		},
 		Applied: []MemoryApply{},
 		Skipped: []SkippedTuple{},

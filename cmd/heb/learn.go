@@ -111,7 +111,26 @@ completed — true if the task was finished.
 
 lessons — what should be remembered. Tuple format: subject·predicate·object. Max 8. Min 0. Confidence >= 0.50.
 
-Only write lessons if at least one of: corrections exist, task incomplete, peak intensity > 0.3, decisions exist, files touched > 0, or new observations not in retrieved memories.
+### What makes a valuable lesson
+
+A lesson must help a FUTURE agent working on this codebase. It is stored in a memory graph and recalled when tokens match. Ask: "if an agent sees this tuple in 3 months, does it save them from a mistake, answer a question, or reveal something non-obvious?"
+
+DO NOT write lessons that merely describe what code changed. Git log and the code itself capture that. These have zero future recall value:
+- BAD: "dm.earned_cards·was_renamed_to·_reward_earned_cards" (git blame shows this)
+- BAD: "function_X·was_added_to·file_Y" (the code shows this)
+- BAD: "bug·was_fixed_in·file_Z" (the commit message says this)
+
+Instead write lessons that capture WHY, WHEN, or HOW — things the code alone doesn't tell you:
+- GOOD: "frigate·cargo_bays·1" (answers a domain question without reading code)
+- GOOD: "elite_card_reward·tracks_via·_reward_earned_cards_not_dm" (non-obvious — the old name looks correct)
+- GOOD: "slot_defaults·can_be_overridden·per_slot_type_in_ship_data" (corrects a wrong assumption)
+- GOOD: "dm.earned_cards·is_deprecated·use_reward_tracker_locals_instead" (warns future agents away from a trap)
+
+### Prediction correction lessons
+
+When prediction_reconciliation contains contradictions, you MUST extract correction lessons that fix the wrong prediction. If the system predicted X based on memory M but the actual answer was Y, the high-value lesson is one that corrects or qualifies M so the prediction won't be wrong next time. These correction lessons should have source: "prediction".
+
+Only write lessons if at least one of: corrections exist, task incomplete, peak intensity > 0.3, decisions exist, files touched > 0, new observations not in retrieved memories, or prediction_reconciliation contains contradictions.
 
 Scope: project (codebase-specific) or universal_candidate (cross-project).
 Confidence: 0.90+ (developer explicitly stated rule), 0.75-0.90 (observed and accepted), 0.50-0.75 (inferred, not confirmed), below 0.50 (do not write).
@@ -232,33 +251,95 @@ func safeResultText(r store.SessionResponse) string {
 }
 
 // callLearnLLM calls the configured LLM for the learn step.
-// Uses learn.model config if set, otherwise falls back to default provider.
-// If no API key, falls back to claude --print with optional --model.
+// Hardcoded to OpenAI o3-mini for now — reasoning model that handles
+// structured JSON well and doesn't require spawning a claude session.
 func callLearnLLM(repoRoot, systemPrompt, userPrompt string) (string, error) {
-	s, err := store.Open(repoRoot)
-	if err != nil {
-		return callLearnViaClaude("", systemPrompt, userPrompt)
+	_, apiKey := resolveProvider()
+	if apiKey == "" {
+		// Fall back to env directly
+		apiKey = os.Getenv("OPENAI_API_KEY")
 	}
-	defer s.Close()
-
-	learnModel, _ := store.ConfigGet(s.DB(), "learn.model")
-
-	// If learn.model is set, always use claude --print --model <model>.
-	// This ensures "opus" or "sonnet" works regardless of which API keys exist.
-	if learnModel != "" {
-		return callLearnViaClaude(learnModel, systemPrompt, userPrompt)
+	if apiKey != "" {
+		return learnViaOpenAI(apiKey, "gpt-4.1", systemPrompt, userPrompt)
 	}
 
-	// No learn.model set — use whatever API key is available.
-	provider, apiKey := resolveProvider()
-	switch provider {
-	case "anthropic":
-		return learnViaAnthropic(apiKey, "claude-haiku-4-5-20251001", systemPrompt, userPrompt)
-	case "openai":
-		return senseViaOpenAI(apiKey, systemPrompt, userPrompt)
-	}
-
+	// Last resort: claude --print (will fail inside Claude Code)
 	return callLearnViaClaude("", systemPrompt, userPrompt)
+}
+
+// learnViaOpenAI calls the OpenAI API with a model suitable for learn.
+// Handles both reasoning models (o-series: developer role, max_completion_tokens)
+// and standard models (system role, max_tokens).
+func learnViaOpenAI(apiKey, model, systemPrompt, userPrompt string) (string, error) {
+	isReasoning := strings.HasPrefix(model, "o")
+
+	var messages []map[string]string
+	if isReasoning {
+		messages = []map[string]string{
+			{"role": "developer", "content": systemPrompt},
+			{"role": "user", "content": userPrompt},
+		}
+	} else {
+		messages = []map[string]string{
+			{"role": "system", "content": systemPrompt},
+			{"role": "user", "content": userPrompt},
+		}
+	}
+
+	reqBody := map[string]any{
+		"model":    model,
+		"messages": messages,
+	}
+	if isReasoning {
+		reqBody["max_completion_tokens"] = 16384
+	} else {
+		reqBody["max_tokens"] = 8192
+		reqBody["temperature"] = 0
+	}
+
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", fmt.Errorf("marshal request: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", "https://api.openai.com/v1/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	client := &http.Client{Timeout: 180 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("api call: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read response: %w", err)
+	}
+
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("openai api returned %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var apiResp struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(respBody, &apiResp); err != nil {
+		return "", fmt.Errorf("parse response: %w", err)
+	}
+	if len(apiResp.Choices) == 0 {
+		return "", fmt.Errorf("empty response from openai")
+	}
+
+	return apiResp.Choices[0].Message.Content, nil
 }
 
 // resolveAnthropicModel maps short names to full model IDs.
@@ -443,7 +524,15 @@ func runRemember(args []string) int {
 		return 1
 	}
 
-	// Step 2: Consolidate (call directly, no subprocess)
+	// Step 2: Git commit (before consolidation mutates .heb/)
+	if doCommit {
+		if err := commitSessionWork(root, learnJSON, 0); err != nil {
+			fmt.Fprintf(os.Stderr, "heb: commit: %v\n", err)
+			// Non-fatal — continue with consolidation
+		}
+	}
+
+	// Step 3: Consolidate (call directly, no subprocess)
 	fmt.Fprintln(os.Stderr, "consolidating...")
 	cfg := consolidate.DefaultConfig()
 	cfg.Format = "json"
@@ -466,14 +555,6 @@ func runRemember(args []string) int {
 		return 1
 	}
 	fmt.Fprintln(os.Stderr, consolidate.StderrSummary(result))
-
-	// Step 3: Git commit
-	if doCommit {
-		if err := commitSessionWork(root, learnJSON, len(result.Applied)); err != nil {
-			fmt.Fprintf(os.Stderr, "heb: commit: %v\n", err)
-			// Non-fatal — consolidation already succeeded
-		}
-	}
 
 	// Step 4: Close session
 	if err := store.CloseSession(s.DB(), sessionID); err != nil {
@@ -569,16 +650,16 @@ func generateCommitMessage(repoRoot, rawPrompt, approach string, filesTouched []
 	userPrompt := fmt.Sprintf("Prompt: %s\nApproach: %s\nFiles: %s\nLessons: %d",
 		rawPrompt, approach, strings.Join(filesTouched, ", "), lessonCount)
 
-	provider, apiKey := resolveProvider()
+	_, apiKey := resolveProvider()
+	if apiKey == "" {
+		apiKey = os.Getenv("OPENAI_API_KEY")
+	}
 	var msg string
 	var err error
 
-	switch provider {
-	case "anthropic":
-		msg, err = learnViaAnthropic(apiKey, "claude-haiku-4-5-20251001", commitMsgSystemPrompt, userPrompt)
-	case "openai":
-		msg, err = senseViaOpenAI(apiKey, commitMsgSystemPrompt, userPrompt)
-	default:
+	if apiKey != "" {
+		msg, err = learnViaOpenAI(apiKey, "gpt-4.1-mini", commitMsgSystemPrompt, userPrompt)
+	} else {
 		msg, err = callLearnViaClaude("haiku", commitMsgSystemPrompt, userPrompt)
 	}
 
