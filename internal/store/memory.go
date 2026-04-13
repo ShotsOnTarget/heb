@@ -204,21 +204,38 @@ func DecayEdge(tx *sql.Tx, aID, bID string, delta float64) error {
 }
 
 // RecallLimit is the hard cap on memories returned by Recall.
-// 16 ≈ 2× human working memory capacity (~7±2). Small enough that
-// token-budget trimming is unnecessary; large enough to carry context.
 const RecallLimit = 16
 
-// Recall ranks memories against a token set and expands via edges.
+// BM25 tuning constants.
+const (
+	bm25K1 = 1.2  // term frequency saturation
+	bm25B  = 0.75 // document length normalization
+)
+
+// attentionMinGap is the minimum score ratio between consecutive results
+// that counts as a "significant drop." The attention filter cuts at the
+// last gap >= this value, mimicking competitive inhibition in recall.
+const attentionMinGap = 1.20
+
+// attentionMinKeep is the minimum number of results the attention filter
+// will return, even if every gap is significant.
+const attentionMinKeep = 2
+
+// Recall ranks memories against a token set using BM25 scoring and
+// an attention filter that drops low-relevance tail results.
 //
-// Scoring uses intersection bonus + IDF rarity weighting:
-//   - Each token hit is weighted by rarity: 1.0 / log2(1 + memoriesContainingToken)
-//   - Hits are combined with a quadratic intersection bonus: (Σ rarity)² / totalTokens
-//   - Final score: weight + intersectionBonus
+// BM25 scoring:
+//   - IDF: ln((N - df + 0.5) / (df + 0.5) + 1)  — rare tokens dominate
+//   - TF saturation: tf*(k1+1) / (tf + k1*(1-b+b*dl/avgdl))
+//   - Combined: bm25_relevance × (0.7 + 0.3 × weight)
+//     Weight is a mild tiebreaker (±30%), not the dominant signal.
 //
-// Spreading activation: for top seeds, fetch neighbours via edges and
-// add them with score = neighbour.weight * 0.5 + edge_strength * 0.5.
+// Attention filter: scans ranked results for gaps where score[i-1]/score[i]
+// >= attentionMinGap. Cuts at the last such gap. Returns at least
+// attentionMinKeep results even if every gap qualifies.
 //
-// Results are capped at RecallLimit (16). No token-budget trimming.
+// Spreading activation: after the attention filter, one-hop edge
+// expansion adds neighbours not already in the result set.
 func Recall(db *sql.DB, tokens []string, limit int) ([]Scored, error) {
 	if limit <= 0 || limit > RecallLimit {
 		limit = RecallLimit
@@ -230,13 +247,17 @@ func Recall(db *sql.DB, tokens []string, limit int) ([]Scored, error) {
 	}
 	defer rows.Close()
 
-	// First pass: load all active memories and count token frequency for IDF.
+	// First pass: load ALL active memories, split into words, count doc frequency.
+	// N and avgDL must cover the full corpus for correct BM25 IDF, not just matches.
 	type candidate struct {
-		mem  Memory
-		hits []int // indices into tokens that matched
+		mem   Memory
+		words []string
+		hits  []int // indices into tokens that matched
 	}
 	var all []candidate
-	tokenFreq := make([]int, len(tokens)) // how many memories contain each token
+	var corpusSize int    // total active memories (including non-matching)
+	var corpusWords int   // total words across all active memories
+	docFreq := make([]int, len(tokens))
 
 	for rows.Next() {
 		var m Memory
@@ -244,49 +265,65 @@ func Recall(db *sql.DB, tokens []string, limit int) ([]Scored, error) {
 			return nil, err
 		}
 		hay := strings.ToLower(m.Subject + " " + m.Predicate + " " + m.Object)
+		words := splitWords(hay)
+		corpusSize++
+		corpusWords += len(words)
 		var hits []int
 		for i, t := range tokens {
 			tt := strings.ToLower(strings.TrimSpace(t))
-			if tt != "" && strings.Contains(hay, tt) {
+			if tt != "" && matchesWord(words, tt) {
 				hits = append(hits, i)
-				tokenFreq[i]++
+				docFreq[i]++
 			}
 		}
 		if len(hits) == 0 && len(tokens) > 0 {
 			continue
 		}
-		all = append(all, candidate{mem: m, hits: hits})
+		all = append(all, candidate{mem: m, words: words, hits: hits})
 	}
 
-	// Compute IDF weights: rare tokens score higher.
+	N := float64(corpusSize)
+	if N == 0 {
+		N = 1
+	}
+
+	// Average document length across full corpus.
+	avgDL := float64(corpusWords) / N
+
+	// BM25 IDF per token.
 	idf := make([]float64, len(tokens))
-	for i, freq := range tokenFreq {
-		idf[i] = 1.0 / math.Log2(float64(2+freq)) // +2 avoids div-by-zero and log(1)=0
+	for i, df := range docFreq {
+		n := float64(df)
+		idf[i] = math.Log((N - n + 0.5) / (n + 0.5) + 1)
 	}
 
-	// Second pass: score with intersection bonus.
-	totalTokens := float64(len(tokens))
-	if totalTokens == 0 {
-		totalTokens = 1
-	}
-
+	// Second pass: BM25 score each candidate.
 	scored := make([]Scored, 0, len(all))
 	for _, c := range all {
-		var raritySum float64
+		dl := float64(len(c.words))
+		var bm25 float64
 		for _, idx := range c.hits {
-			raritySum += idf[idx]
+			tt := strings.ToLower(strings.TrimSpace(tokens[idx]))
+			tf := 0
+			for _, w := range c.words {
+				if w == tt {
+					tf++
+				}
+			}
+			tfComp := (float64(tf) * (bm25K1 + 1)) / (float64(tf) + bm25K1*(1-bm25B+bm25B*dl/avgDL))
+			bm25 += idf[idx] * tfComp
 		}
-		intersectionBonus := (raritySum * raritySum) / totalTokens
-		score := c.mem.Weight + intersectionBonus
+		// Weight as mild tiebreaker: ±30% influence, not dominant.
+		score := bm25 * (0.7 + 0.3*c.mem.Weight)
 		scored = append(scored, Scored{Memory: c.mem, Tuple: c.mem.TupleString(), Score: score, Source: "match"})
 	}
 
 	sort.Slice(scored, func(i, j int) bool { return scored[i].Score > scored[j].Score })
-	if len(scored) > limit {
-		scored = scored[:limit]
-	}
 
-	// Spreading activation: one hop, top up to limit more.
+	// Attention filter: cut at the last significant gap.
+	scored = attentionFilter(scored, limit)
+
+	// Spreading activation: one hop from surviving results.
 	seen := make(map[string]bool, len(scored))
 	for _, s := range scored {
 		seen[s.ID] = true
@@ -324,10 +361,9 @@ func Recall(db *sql.DB, tokens []string, limit int) ([]Scored, error) {
 	}
 	sort.Slice(neighbours, func(i, j int) bool { return neighbours[i].Score > neighbours[j].Score })
 
-	// Cap total (match + edge) at RecallLimit.
+	// Merge match + edge results, cap at limit.
 	combined := append(scored, neighbours...)
 	if len(combined) > limit {
-		// Keep hard constraints, then top-scored.
 		var pinned, rest []Scored
 		for _, s := range combined {
 			if strings.HasPrefix(s.Subject, "!") {
@@ -349,6 +385,56 @@ func Recall(db *sql.DB, tokens []string, limit int) ([]Scored, error) {
 	return combined, nil
 }
 
+// attentionFilter trims a sorted score list at the last "significant gap"
+// — a point where score[i-1]/score[i] >= attentionMinGap. This mimics
+// competitive inhibition: memories compete for attention and only the
+// cluster of strong activations survives.
+//
+// Always returns at least attentionMinKeep results and at most limit.
+func attentionFilter(scored []Scored, limit int) []Scored {
+	if len(scored) <= attentionMinKeep {
+		return scored
+	}
+	cap := len(scored)
+	if cap > limit {
+		cap = limit
+	}
+
+	// Find the last gap >= attentionMinGap within the cap.
+	cutAt := cap // default: keep everything up to limit
+	for i := attentionMinKeep; i < cap; i++ {
+		if scored[i].Score <= 0 {
+			cutAt = i
+			break
+		}
+		if scored[i-1].Score/scored[i].Score >= attentionMinGap {
+			cutAt = i
+		}
+	}
+	return scored[:cutAt]
+}
+
+
+// splitWords breaks a string on word boundaries (spaces, underscores,
+// hyphens, dots) into lowercase tokens. Used for word-boundary matching
+// in Recall so that "low" doesn't match inside "follow" or "slowed".
+func splitWords(s string) []string {
+	return strings.FieldsFunc(s, func(r rune) bool {
+		return r == ' ' || r == '_' || r == '-' || r == '.'
+	})
+}
+
+// matchesWord returns true if needle equals any word in hayWords.
+// This is whole-word matching — "low" matches the word "low" but not
+// "follow" or "slowed".
+func matchesWord(hayWords []string, needle string) bool {
+	for _, w := range hayWords {
+		if w == needle {
+			return true
+		}
+	}
+	return false
+}
 
 func nullIfEmpty(s string) any {
 	if s == "" {

@@ -91,6 +91,98 @@ func TestBuildMemoryDeltasMalformed(t *testing.T) {
 	}
 }
 
+func TestBuildMemoryDeltasPredictionContradiction(t *testing.T) {
+	cfg := DefaultConfig()
+	c := LearnResult{
+		Lessons: []Lesson{
+			{Observation: "shake·implements·screen_shake", Scope: "project", Confidence: 0.90},
+		},
+		PredictionReconciliation: &PredictionReconciliation{
+			ColdStart: false,
+			Elements: []PredictionReconcileElement{
+				{
+					Element:  "files",
+					Result:   "wrong",
+					Event:    "prediction_contradicted",
+					Lesson:   "combat_screen_shake·is_implemented_in·main.gd_not_combat/combat.gd",
+				},
+				{
+					Element: "approach",
+					Result:  "matched",
+					Event:   "prediction_confirmed",
+					Lesson:  "",
+				},
+			},
+		},
+	}
+	deltas, skipped := buildMemoryDeltas(c, cfg)
+	if len(skipped) != 0 {
+		t.Fatalf("skipped = %v, want empty", skipped)
+	}
+	// 1 regular lesson + 1 prediction contradiction lesson
+	if len(deltas) != 2 {
+		t.Fatalf("deltas = %d, want 2", len(deltas))
+	}
+	d := deltas[1]
+	if d.Subject != "combat_screen_shake" || d.Predicate != "is_implemented_in" || d.Object != "main.gd_not_combat/combat.gd" {
+		t.Errorf("prediction lesson split wrong: %+v", d)
+	}
+	if !approxEqual(d.DeltaNew, 0.85*cfg.NewGain) {
+		t.Errorf("delta_new = %v, want %v", d.DeltaNew, 0.85*cfg.NewGain)
+	}
+	if !contains(d.Reason, "prediction contradiction") {
+		t.Errorf("reason = %q, want prediction contradiction prefix", d.Reason)
+	}
+}
+
+func TestBuildMemoryDeltasPredictionContradictionColdStartSkipped(t *testing.T) {
+	cfg := DefaultConfig()
+	c := LearnResult{
+		PredictionReconciliation: &PredictionReconciliation{
+			ColdStart: true,
+			Elements: []PredictionReconcileElement{
+				{
+					Element: "files",
+					Result:  "wrong",
+					Event:   "prediction_contradicted",
+					Lesson:  "x·y·z",
+				},
+			},
+		},
+	}
+	deltas, _ := buildMemoryDeltas(c, cfg)
+	if len(deltas) != 0 {
+		t.Errorf("deltas = %d, want 0 (cold start should skip)", len(deltas))
+	}
+}
+
+func TestBuildMemoryDeltasPredictionContradictionMalformed(t *testing.T) {
+	cfg := DefaultConfig()
+	c := LearnResult{
+		PredictionReconciliation: &PredictionReconciliation{
+			ColdStart: false,
+			Elements: []PredictionReconcileElement{
+				{
+					Element: "files",
+					Result:  "wrong",
+					Event:   "prediction_contradicted",
+					Lesson:  "malformed_no_dots",
+				},
+			},
+		},
+	}
+	deltas, skipped := buildMemoryDeltas(c, cfg)
+	if len(deltas) != 0 {
+		t.Errorf("deltas = %d, want 0", len(deltas))
+	}
+	if len(skipped) != 1 {
+		t.Fatalf("skipped = %d, want 1", len(skipped))
+	}
+	if !contains(skipped[0].Reason, "malformed") {
+		t.Errorf("reason = %q", skipped[0].Reason)
+	}
+}
+
 func TestBuildMemoryDeltasUniversalPrefix(t *testing.T) {
 	cfg := DefaultConfig()
 	c := LearnResult{
