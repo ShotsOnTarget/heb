@@ -92,8 +92,8 @@ timestamp_end — use: <TIMESTAMP_END>
 raw_prompt — original developer prompt from sense contract raw field.
 intent, tokens — copy from sense contract. Do not re-derive.
 
-memory_loaded — from recall contract: memories_loaded is the count of memories array, git_refs is the count of git_refs array, was_cold_start is true if both are zero.
-recalled_via_edges — from recall contract, tuples where source is "edge". Each element is a flat "subject·predicate·object" string, NOT a nested array. Emit ["a·b·c"] not [["a","b","c"]].
+memory_loaded — copy VERBATIM from the "Pre-computed fields" section. Do NOT re-derive.
+recalled_via_edges — copy VERBATIM from the "Pre-computed fields" section. Do NOT re-derive.
 
 implementation.files_read — every file the agent opened, read, searched, or grep'd during execution. Deduplicate alphabetically. Repo-relative paths.
 implementation.files_touched — files the agent actually edited or created. Subset of files_read.
@@ -187,10 +187,15 @@ func doLearn(sessionID string) (string, error) {
 		return "", fmt.Errorf("read transcript: %w", err)
 	}
 
+	// Pre-compute fields from recall contract that the LLM would otherwise
+	// have to extract manually (eliminates malformed output).
+	precomputed := precomputeFromRecall(recallJSON)
+
 	// Build user prompt with all context
 	var userPrompt strings.Builder
 	fmt.Fprintf(&userPrompt, "## Sense contract\n\n```json\n%s\n```\n\n", senseJSON)
 	fmt.Fprintf(&userPrompt, "## Recall contract\n\n```json\n%s\n```\n\n", recallJSON)
+	fmt.Fprintf(&userPrompt, "## Pre-computed fields (copy verbatim, do NOT re-derive)\n\n```json\n%s\n```\n\n", precomputed)
 	if reflectJSON != "" {
 		fmt.Fprintf(&userPrompt, "## Reflect contract\n\n```json\n%s\n```\n\n", reflectJSON)
 	} else {
@@ -232,6 +237,42 @@ func doLearn(sessionID string) (string, error) {
 	}
 
 	return raw, nil
+}
+
+// precomputeFromRecall extracts recalled_via_edges and memory_loaded from
+// the recall contract JSON so the learn LLM can copy them verbatim instead
+// of deriving them (which was error-prone — arrays vs strings, miscounts).
+func precomputeFromRecall(recallJSON string) string {
+	var recall struct {
+		Memories []struct {
+			Tuple  string `json:"tuple"`
+			Source string `json:"source"`
+		} `json:"memories"`
+		GitRefs []json.RawMessage `json:"git_refs"`
+	}
+	json.Unmarshal([]byte(recallJSON), &recall)
+
+	var edgeTuples []string
+	for _, m := range recall.Memories {
+		if m.Source == "edge" {
+			edgeTuples = append(edgeTuples, m.Tuple)
+		}
+	}
+
+	memoriesLoaded := len(recall.Memories)
+	gitRefs := len(recall.GitRefs)
+	coldStart := memoriesLoaded == 0 && gitRefs == 0
+
+	result := map[string]any{
+		"recalled_via_edges": edgeTuples,
+		"memory_loaded": map[string]any{
+			"memories_loaded": memoriesLoaded,
+			"git_refs":        gitRefs,
+			"was_cold_start":  coldStart,
+		},
+	}
+	out, _ := json.MarshalIndent(result, "", "  ")
+	return string(out)
 }
 
 // safeResultText returns the best display text for a transcript entry.
