@@ -46,7 +46,7 @@ func TestThreshold(t *testing.T) {
 			name: "lessons trigger",
 			in: LearnResult{
 				Completed: true,
-				Lessons:   []Lesson{{Observation: "a·b·c", Confidence: 0.8}},
+				Lessons:   []Lesson{{Body: "some useful observation", Confidence: 0.8}},
 			},
 			wantMet:  true,
 			wantSubs: "lessons",

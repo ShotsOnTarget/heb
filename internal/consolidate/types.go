@@ -131,23 +131,26 @@ type Implementation struct {
 
 // Lesson is one observation the agent learned during the session.
 type Lesson struct {
-	Observation string  `json:"observation"` // "subject·predicate·object"
-	Scope       string  `json:"scope"`       // "project" | "universal_candidate"
-	Confidence  float64 `json:"confidence"`
-	Evidence    string  `json:"evidence,omitempty"`
+	Body       string  `json:"body"`              // free-form atom text
+	Scope      string  `json:"scope"`             // "project" | "universal_candidate"
+	Confidence float64 `json:"confidence"`
+	Evidence   string  `json:"evidence,omitempty"`
 }
 
-// SPO is the split form of a tuple used by edge deltas.
-type SPO struct {
-	Subject   string `json:"subject"`
-	Predicate string `json:"predicate"`
-	Object    string `json:"object"`
-}
-
-// TupleString reconstructs "subject·predicate·object" for logging /
-// display / identity.
-func (s SPO) TupleString() string {
-	return s.Subject + "\u00b7" + s.Predicate + "\u00b7" + s.Object
+// UnmarshalJSON handles backward compatibility with the old "observation" field.
+func (l *Lesson) UnmarshalJSON(data []byte) error {
+	type Alias Lesson
+	aux := &struct {
+		Observation string `json:"observation"`
+		*Alias
+	}{Alias: (*Alias)(l)}
+	if err := json.Unmarshal(data, aux); err != nil {
+		return err
+	}
+	if l.Body == "" && aux.Observation != "" {
+		l.Body = aux.Observation
+	}
+	return nil
 }
 
 // MemoryDelta is a single memory event to apply to the store. The store
@@ -155,9 +158,7 @@ func (s SPO) TupleString() string {
 // exists. For entanglement events both deltas are the same negative
 // number.
 type MemoryDelta struct {
-	Subject        string  `json:"subject"`
-	Predicate      string  `json:"predicate"`
-	Object         string  `json:"object"`
+	Body           string  `json:"body"`
 	Event          string  `json:"event"` // "session_reinforced" | "entanglement_signal"
 	DeltaNew       float64 `json:"delta_new"`
 	DeltaReinforce float64 `json:"delta_reinforce"`
@@ -167,8 +168,8 @@ type MemoryDelta struct {
 // EdgeDelta is a strengthening between two memories written in the same
 // session. Canonicalisation (smaller ID first) is handled by the store.
 type EdgeDelta struct {
-	A            SPO     `json:"a"`
-	B            SPO     `json:"b"`
+	ABody        string  `json:"a_body"`
+	BBody        string  `json:"b_body"`
 	Delta        float64 `json:"delta"`
 	CoActivation bool    `json:"co_activation,omitempty"`
 }
@@ -222,9 +223,7 @@ type Result struct {
 // applying a MemoryDelta. Filled in by cmd/heb after the transaction.
 type MemoryApply struct {
 	ID        string  `json:"id"`
-	Subject   string  `json:"subject"`
-	Predicate string  `json:"predicate"`
-	Object    string  `json:"object"`
+	Body      string  `json:"body"`
 	Event     string  `json:"event"`
 	NewWeight float64 `json:"new_weight"`
 	WasNew    bool    `json:"was_new"`

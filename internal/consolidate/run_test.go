@@ -31,8 +31,8 @@ func TestRunHappyPath(t *testing.T) {
 		Project:   "p",
 		Completed: true,
 		Lessons: []Lesson{
-			{Observation: "drone_stats·defined_in·main", Confidence: 0.80},
-			{Observation: "drone_pool·contains·types", Confidence: 0.80},
+			{Body: "drone_stats defined_in main", Confidence: 0.80},
+			{Body: "drone_pool contains types", Confidence: 0.80},
 		},
 	}
 	r := Run(c, cfg)
@@ -50,10 +50,9 @@ func TestRunHappyPath(t *testing.T) {
 	}
 }
 
-// E2E interaction test mirroring entanglement_test's interaction case:
-// a corrective session with one lesson whose tuple also matches a
-// surprise_touch. Result.Payload.Memories should contain 2 entries —
-// one session_reinforced and one entanglement_signal on the same tuple.
+// E2E interaction test: a corrective session with one lesson whose body
+// also matches a surprise_touch. Result.Payload.Memories should contain
+// 2 entries — one session_reinforced and one entanglement_signal.
 func TestRunInteractionReinforcementPlusEntanglement(t *testing.T) {
 	cfg := DefaultConfig()
 	c := LearnResult{
@@ -63,7 +62,7 @@ func TestRunInteractionReinforcementPlusEntanglement(t *testing.T) {
 		CorrectionCount: 1,
 		PeakIntensity:   0.6,
 		Lessons: []Lesson{
-			{Observation: "drone_stats·derived_by·type_lookup", Confidence: 0.80},
+			{Body: "drone_stats derived_by type_lookup", Confidence: 0.80},
 		},
 		Implementation: Implementation{
 			SurpriseTouches: []string{"game/drone_stats.gd"},
@@ -107,16 +106,15 @@ func TestRunSkippedPropagates(t *testing.T) {
 		Project:   "p",
 		Completed: true,
 		Lessons: []Lesson{
-			{Observation: "good·tuple·here", Confidence: 0.80},
-			{Observation: "bad", Confidence: 0.80},         // malformed
-			{Observation: "low·conf·tuple", Confidence: 0.1}, // below threshold
+			{Body: "good atom here", Confidence: 0.80},
+			{Body: "low conf atom", Confidence: 0.1}, // below threshold
 		},
 	}
 	r := Run(c, cfg)
 	if len(r.Payload.Memories) != 1 {
 		t.Errorf("memories = %d, want 1", len(r.Payload.Memories))
 	}
-	if len(r.Skipped) != 2 {
-		t.Errorf("skipped = %d, want 2", len(r.Skipped))
+	if len(r.Skipped) != 1 {
+		t.Errorf("skipped = %d, want 1", len(r.Skipped))
 	}
 }

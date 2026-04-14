@@ -1,16 +1,15 @@
 package consolidate
 
-import "strings"
+import "github.com/steelboltgames/heb/internal/memory"
 
 // buildEdgeDeltas emits one CoActivationBoost edge delta for every
 // unordered pair of distinct memories in the written set that share at
-// least one token in their subject or object fields. This prevents
-// coincidental pairs (lessons that happened to be learned in the same
-// session but are about unrelated topics) from creating noise edges.
+// least one token. This prevents coincidental pairs (lessons that
+// happened to be learned in the same session but are about unrelated
+// topics) from creating noise edges.
 //
-// Token overlap is checked on subject and object only — predicates are
-// excluded because verbs like "defined_in" or "has" would match
-// everything.
+// Token overlap is checked on the full body text using the shared
+// tokenizer.
 //
 // The written set is derived from the memory deltas produced by
 // buildMemoryDeltas. Entanglement-signal memory deltas must NOT be in
@@ -22,11 +21,15 @@ func buildEdgeDeltas(written []MemoryDelta, cfg Config) []EdgeDelta {
 		return nil
 	}
 
-	// Pre-compute token sets for each written memory (subject + object only).
+	// Pre-compute token sets for each written memory.
 	type tokenSet map[string]bool
 	sets := make([]tokenSet, len(written))
 	for i, m := range written {
-		sets[i] = extractTokens(m.Subject, m.Object)
+		set := make(tokenSet)
+		for _, tok := range memory.Tokenize(m.Body) {
+			set[tok] = true
+		}
+		sets[i] = set
 	}
 
 	var out []EdgeDelta
@@ -36,8 +39,8 @@ func buildEdgeDeltas(written []MemoryDelta, cfg Config) []EdgeDelta {
 				continue
 			}
 			out = append(out, EdgeDelta{
-				A:            SPO{Subject: written[i].Subject, Predicate: written[i].Predicate, Object: written[i].Object},
-				B:            SPO{Subject: written[j].Subject, Predicate: written[j].Predicate, Object: written[j].Object},
+				ABody:        written[i].Body,
+				BBody:        written[j].Body,
 				Delta:        cfg.CoActivationBoost,
 				CoActivation: true,
 			})
@@ -46,38 +49,8 @@ func buildEdgeDeltas(written []MemoryDelta, cfg Config) []EdgeDelta {
 	return out
 }
 
-// extractTokens splits subject and object fields on underscores, spaces,
-// and the middle-dot separator, lowercases everything, and returns a set
-// of tokens. Single-character tokens are dropped as noise.
-func extractTokens(fields ...string) map[string]bool {
-	set := make(map[string]bool)
-	for _, f := range fields {
-		for _, word := range splitTokens(f) {
-			if len(word) > 1 {
-				set[word] = true
-			}
-		}
-	}
-	return set
-}
-
-// splitTokens breaks a string into lowercase tokens on common delimiters.
-func splitTokens(s string) []string {
-	s = strings.ToLower(s)
-	// Replace common delimiters with spaces, then split.
-	s = strings.NewReplacer(
-		"_", " ",
-		"\u00b7", " ", // middle dot
-		".", " ",
-		"/", " ",
-		"-", " ",
-	).Replace(s)
-	return strings.Fields(s)
-}
-
 // tokensOverlap returns true if the two token sets share at least one token.
 func tokensOverlap(a, b map[string]bool) bool {
-	// Iterate the smaller set for efficiency.
 	if len(a) > len(b) {
 		a, b = b, a
 	}

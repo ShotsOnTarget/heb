@@ -39,7 +39,7 @@ func RenderHuman(r Result) string {
 	fmt.Fprintf(&b, "MEMORIES (%d total)\n", len(r.Applied))
 	fmt.Fprintf(&b, "  added:      %d new entries\n", added)
 	fmt.Fprintf(&b, "  reinforced: %d updated\n", reinforced)
-	fmt.Fprintf(&b, "  skipped:    %d (below confidence or malformed tuple)\n", len(r.Skipped))
+	fmt.Fprintf(&b, "  skipped:    %d (below confidence or energy budget)\n", len(r.Skipped))
 	b.WriteString("\n")
 
 	b.WriteString("EDGES\n")
@@ -123,13 +123,13 @@ func StderrSummary(r Result) string {
 	if len(newMems) > 0 {
 		b.WriteString("\n  learned:")
 		for _, m := range newMems {
-			fmt.Fprintf(&b, "\n    + %s\u00b7%s\u00b7%s (%.2f)", m.Subject, m.Predicate, m.Object, m.NewWeight)
+			fmt.Fprintf(&b, "\n    + %s (%.2f)", m.Body, m.NewWeight)
 		}
 	}
 	if len(reinforcedMems) > 0 {
 		b.WriteString("\n  reinforced:")
 		for _, m := range reinforcedMems {
-			fmt.Fprintf(&b, "\n    \u2191 %s\u00b7%s\u00b7%s (%.2f)", m.Subject, m.Predicate, m.Object, m.NewWeight)
+			fmt.Fprintf(&b, "\n    \u2191 %s (%.2f)", m.Body, m.NewWeight)
 		}
 	}
 	if len(r.Skipped) > 0 {
