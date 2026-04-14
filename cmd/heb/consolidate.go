@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
+	"strings"
 
 	"github.com/steelboltgames/heb/internal/consolidate"
 	"github.com/steelboltgames/heb/internal/store"
@@ -128,6 +130,12 @@ func applyPayload(result *consolidate.Result, lr *consolidate.LearnResult, cfg *
 	}
 	defer s.Close()
 
+	// Capture git HEAD for traceability — best-effort, non-fatal.
+	if out, err := exec.Command("git", "rev-parse", "HEAD").Output(); err == nil {
+		p.CommitHash = strings.TrimSpace(string(out))
+		result.Payload = p
+	}
+
 	tx, err := s.DB().Begin()
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
@@ -164,7 +172,7 @@ func applyMemoryDeltas(tx *sql.Tx, p consolidate.Payload, result *consolidate.Re
 			tx,
 			md.Body,
 			md.Event, md.Reason,
-			p.SessionID, p.BeadID, p.TopicTokens,
+			p.SessionID, p.BeadID, p.TopicTokens, p.CommitHash,
 			md.DeltaNew, md.DeltaReinforce,
 		)
 		if err != nil {

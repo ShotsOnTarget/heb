@@ -62,7 +62,7 @@ type LearnResult struct {
 	CorrectionCount  int             `json:"correction_count"`
 	PeakIntensity    float64         `json:"peak_intensity"`
 	Completed        bool            `json:"completed"`
-	Decisions        []json.RawMessage `json:"decisions,omitempty"`
+	Decisions        []Decision        `json:"decisions,omitempty"`
 	Lessons          []Lesson        `json:"lessons"`
 	RecalledViaEdges          FlexStringSlice          `json:"recalled_via_edges,omitempty"`
 	PredictionReconciliation *PredictionReconciliation `json:"prediction_reconciliation,omitempty"`
@@ -153,6 +153,13 @@ func (l *Lesson) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// Decision is a design question the agent asked and the developer answered.
+type Decision struct {
+	Question string `json:"question"`
+	Answer   string `json:"answer"`
+	Weight   string `json:"weight"` // "high" | "medium" | "low"
+}
+
 // MemoryDelta is a single memory event to apply to the store. The store
 // picks deltaNew or deltaReinforce based on whether the memory already
 // exists. For entanglement events both deltas are the same negative
@@ -188,6 +195,7 @@ type Payload struct {
 	Project     string          `json:"project"`
 	BeadID      string          `json:"bead_id,omitempty"`
 	TopicTokens string          `json:"topic_tokens,omitempty"` // comma-separated sense tokens for memory tagging
+	CommitHash  string          `json:"commit_hash,omitempty"`  // git HEAD at consolidate time — traceability
 	Memories    []MemoryDelta   `json:"memories"`
 	Edges       []EdgeDelta     `json:"edges"`
 	Episode     *EpisodePayload `json:"episode,omitempty"`

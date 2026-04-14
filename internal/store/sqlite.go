@@ -18,7 +18,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const SchemaVersion = 6
+const SchemaVersion = 8
 
 // Store is the memory store interface. Commands depend on this, not on
 // any concrete backend.
@@ -163,6 +163,9 @@ func Open(repoRoot string) (*SQLiteStore, error) {
 		db.Exec(`CREATE INDEX IF NOT EXISTS idx_memories_status ON memories(status)`)
 		db.Exec(`PRAGMA foreign_keys=ON`)
 	}
+	// v8: add commit_hash to events for git traceability.
+	db.Exec(`ALTER TABLE events ADD COLUMN commit_hash TEXT`)
+	db.Exec(`CREATE INDEX IF NOT EXISTS idx_events_commit ON events(commit_hash)`)
 	// Bump schema version if behind.
 	if _, err := db.Exec(
 		`UPDATE meta SET value = ? WHERE key = 'schema_version' AND CAST(value AS INTEGER) < ?`,
@@ -249,6 +252,7 @@ CREATE TABLE IF NOT EXISTS events (
     reason       TEXT,
     session_id   TEXT,
     bead_id      TEXT,
+    commit_hash  TEXT,
     created_at   INTEGER NOT NULL,
     FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
 );

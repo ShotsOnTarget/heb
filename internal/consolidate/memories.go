@@ -45,6 +45,27 @@ func buildMemoryDeltas(c LearnResult, cfg Config) ([]MemoryDelta, []SkippedTuple
 		})
 	}
 
+	// Promote high-weight decisions to lesson candidates.
+	// Decisions capture the initial design rationale that corrections
+	// often crowd out — they are the most valuable session knowledge.
+	for _, d := range c.Decisions {
+		if d.Weight != "high" || d.Answer == "" {
+			continue
+		}
+		// Synthesise a terse atom from the answer (the actionable part).
+		body := d.Answer
+		// Cap at a reasonable length for memory storage.
+		if len(body) > 80 {
+			body = body[:80]
+		}
+		candidates = append(candidates, cand{
+			body:       body,
+			confidence: 0.80,
+			reason:     "design decision (high weight)",
+			tokens:     memory.TokenCount(body),
+		})
+	}
+
 	// Collect prediction contradiction lessons
 	if c.PredictionReconciliation != nil && !c.PredictionReconciliation.ColdStart {
 		for _, elem := range c.PredictionReconciliation.Elements {

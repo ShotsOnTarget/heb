@@ -114,10 +114,14 @@ decisions — every question the agent asked AND the developer answered. Each ob
   - "weight": "high" (design decision), "medium" (clarification), "low" (confirmation)
 Empty array if the agent asked nothing.
 
-corrections — every developer correction. Each object has exactly three fields:
+corrections — every developer correction. Each object has exactly four fields:
   - "what": what the agent did wrong or what needed correcting (past tense)
   - "correction": what the developer said or instructed instead
   - "intensity": 0.1-0.3 (minor), 0.4-0.6 (clear), 0.7-0.8 (emphatic), 0.9-1.0 (hard/caps/repetition)
+  - "impact": "cosmetic" | "behavioral" | "architectural"
+    - cosmetic: surface changes — colors, labels, text, styling, naming, formatting. These rarely warrant lessons.
+    - behavioral: changes to logic, rules, or conditions — e.g. "don't cap engineering bays", "use queue not stack". Worth remembering.
+    - architectural: wrong approach, wrong file, wrong pattern — e.g. "don't mock the DB", "use the existing manager". High lesson value.
 Do NOT use "developer_input" or any other field name. Empty array if none.
 
 correction_count — length of corrections array.
@@ -147,6 +151,13 @@ Instead write lessons that capture WHY, WHEN, or HOW — things the code alone d
 - GOOD: "slot_defaults can be overridden per slot_type in ship_data" (corrects a wrong assumption)
 - GOOD: "dm.earned_cards is deprecated use reward_tracker locals instead" (warns future agents away from a trap)
 
+### Correction-derived lessons
+
+Not all corrections deserve lessons. Use the correction's impact field:
+- **cosmetic** corrections (colors, labels, text casing) → do NOT generate lessons unless the same cosmetic rule applies broadly. A one-off "change this label" is not worth a memory slot.
+- **behavioral** corrections (logic changes, rule changes) → generate lessons at 0.75-0.85 confidence. These prevent future agents from making the same wrong assumption.
+- **architectural** corrections (wrong approach, wrong pattern, wrong file) → generate lessons at 0.85-0.95 confidence. These are the most valuable — they redirect future agents away from a fundamentally wrong path.
+
 ### Code anchor lessons
 
 When the session touched or discussed key functions, classes, constants, or
@@ -170,6 +181,12 @@ Examples:
 ### Prediction correction lessons
 
 When prediction_reconciliation contains contradictions, you MUST extract correction lessons that fix the wrong prediction. If the system predicted X based on memory M but the actual answer was Y, the high-value lesson is one that corrects or qualifies M so the prediction won't be wrong next time. These correction lessons should have source: "prediction".
+
+### Recency bias warning
+
+Sessions often end with cosmetic corrections (color, naming, formatting). These corrections matter but must NOT crowd out the core design work from early in the session. The initial design proposal, architectural decisions, and implementation approach are typically the highest-value lessons. Corrections that only affect surface details (label text, colors, styling) should get lower confidence (0.50-0.65) unless they reveal a non-obvious rule. Reserve higher confidence slots for WHY the system works the way it does.
+
+When reviewing the transcript, give EQUAL attention to early exchanges (design proposals, Q&A, first implementation) and late exchanges (corrections, polish). A session that built a new overload card system and then tweaked its color should remember the overload system design, not just the color choice.
 
 Only write lessons if at least one of: corrections exist, task incomplete, peak intensity > 0.3, decisions exist, files touched > 0, new observations not in retrieved memories, or prediction_reconciliation contains contradictions.
 
@@ -243,6 +260,19 @@ func doLearn(sessionID string) (string, error) {
 	} else {
 		fmt.Fprintf(&userPrompt, "## Reflect contract\n\n(none)\n\n")
 	}
+
+	// Emit per-turn summaries first so the LLM has an overview before
+	// reading the full transcript. This counters lost-in-the-middle bias
+	// by front-loading a condensed view of every exchange.
+	fmt.Fprintf(&userPrompt, "## Turn summaries (review ALL before extracting lessons)\n\n")
+	for i, r := range responses {
+		ts := time.Unix(r.CreatedAt, 0).UTC().Format("15:04:05Z")
+		text := safeResultText(r)
+		signal := classifyTurnSignal(r.Role, text)
+		summary := firstLine(text, 120)
+		fmt.Fprintf(&userPrompt, "%d. [%s] %s (%s): %s\n", i+1, ts, r.Role, signal, summary)
+	}
+	fmt.Fprintf(&userPrompt, "\n")
 
 	fmt.Fprintf(&userPrompt, "## Transcript (%d turns)\n\n", len(responses))
 	for _, r := range responses {
@@ -589,6 +619,39 @@ func isSignatureLine(line string) bool {
 		}
 	}
 	return false
+}
+
+// classifyTurnSignal tags a transcript turn with its signal type so the
+// learn LLM can see at a glance which turns carry design vs cosmetic weight.
+func classifyTurnSignal(role, text string) string {
+	lower := strings.ToLower(text)
+
+	if role == "user" {
+		// Check for corrections (user pushing back)
+		for _, kw := range []string{"no ", "not that", "instead", "change ", "don't", "shouldn't", "wrong"} {
+			if strings.Contains(lower, kw) {
+				return "correction"
+			}
+		}
+		// Check for confirmation
+		for _, kw := range []string{"looks good", "lgtm", "yes", "yep", "go ahead", "approved", "ship it"} {
+			if strings.Contains(lower, kw) {
+				return "confirmation"
+			}
+		}
+		return "request"
+	}
+
+	// Assistant turns
+	// Design proposal: contains questions or options
+	if strings.Contains(lower, "?") || strings.Contains(lower, "option") || strings.Contains(lower, "approach") {
+		return "design"
+	}
+	// Implementation: contains tool use indicators
+	if strings.Contains(text, "[Edit:") || strings.Contains(text, "[Write:") || strings.Contains(text, "[Bash:") {
+		return "implementation"
+	}
+	return "response"
 }
 
 // firstLine returns the first non-empty line of s, truncated to maxLen.
