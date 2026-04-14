@@ -137,8 +137,32 @@ func Open(repoRoot string) (*SQLiteStore, error) {
 	// v6: add topic_tokens to memories for edge filtering and scoped decay.
 	db.Exec(`ALTER TABLE memories ADD COLUMN topic_tokens TEXT NOT NULL DEFAULT ''`)
 	// v7: migrate SPO columns to body (cell assembly model).
+	// Step 1: add body column if missing.
 	db.Exec(`ALTER TABLE memories ADD COLUMN body TEXT NOT NULL DEFAULT ''`)
+	// Step 2: backfill body from SPO for rows that still have empty body.
 	db.Exec(`UPDATE memories SET body = subject || ' ' || predicate || ' ' || object WHERE body = '' AND subject IS NOT NULL AND subject != ''`)
+	// Step 3: recreate table without SPO columns (SQLite has no DROP COLUMN on older versions).
+	// Check if the old columns still exist before attempting migration.
+	var hasSubject int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('memories') WHERE name='subject'`).Scan(&hasSubject); err == nil && hasSubject > 0 {
+		db.Exec(`PRAGMA foreign_keys=OFF`)
+		db.Exec(`CREATE TABLE memories_new (
+			id           TEXT PRIMARY KEY,
+			body         TEXT NOT NULL,
+			weight       REAL NOT NULL DEFAULT 0,
+			status       TEXT NOT NULL DEFAULT 'active',
+			topic_tokens TEXT NOT NULL DEFAULT '',
+			created_at   INTEGER NOT NULL,
+			updated_at   INTEGER NOT NULL
+		)`)
+		db.Exec(`INSERT INTO memories_new(id, body, weight, status, topic_tokens, created_at, updated_at)
+			SELECT id, body, weight, status, COALESCE(topic_tokens,''), created_at, updated_at FROM memories`)
+		db.Exec(`DROP TABLE memories`)
+		db.Exec(`ALTER TABLE memories_new RENAME TO memories`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_memories_weight ON memories(weight)`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_memories_status ON memories(status)`)
+		db.Exec(`PRAGMA foreign_keys=ON`)
+	}
 	// Bump schema version if behind.
 	if _, err := db.Exec(
 		`UPDATE meta SET value = ? WHERE key = 'schema_version' AND CAST(value AS INTEGER) < ?`,
