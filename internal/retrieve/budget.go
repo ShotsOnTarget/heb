@@ -17,9 +17,9 @@ type Result struct {
 }
 
 // isHardConstraint reports whether a memory is pinned:
-// subject beginning with "!" cannot be trimmed.
+// body beginning with "!" cannot be trimmed.
 func isHardConstraint(m store.Scored) bool {
-	return len(m.Subject) > 0 && m.Subject[0] == '!'
+	return len(m.Body) > 0 && m.Body[0] == '!'
 }
 
 // measureFunc returns the approximate token count for the current

@@ -17,7 +17,7 @@ func TestRunHappyPath(t *testing.T) {
 	}
 	memories := []store.Scored{
 		{
-			Memory: store.Memory{Subject: "drone_cards", Predicate: "extended_by", Object: "subtype", Weight: 0.72},
+			Memory: store.Memory{Body: "drone_cards extended_by subtype", Weight: 0.72},
 			Score:  0.72,
 			Source: "match",
 		},

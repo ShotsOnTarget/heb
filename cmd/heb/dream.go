@@ -55,22 +55,16 @@ func runDreamSeeds(args []string) int {
 	}
 
 	type seedOut struct {
-		ID        string  `json:"id"`
-		Tuple     string  `json:"tuple"`
-		Subject   string  `json:"subject"`
-		Predicate string  `json:"predicate"`
-		Object    string  `json:"object"`
-		Weight    float64 `json:"weight"`
+		ID     string  `json:"id"`
+		Body   string  `json:"body"`
+		Weight float64 `json:"weight"`
 	}
 	out := make([]seedOut, len(seeds))
 	for i, m := range seeds {
 		out[i] = seedOut{
-			ID:        m.ID,
-			Tuple:     m.TupleString(),
-			Subject:   m.Subject,
-			Predicate: m.Predicate,
-			Object:    m.Object,
-			Weight:    m.Weight,
+			ID:     m.ID,
+			Body:   m.Body,
+			Weight: m.Weight,
 		}
 	}
 	enc := json.NewEncoder(os.Stdout)

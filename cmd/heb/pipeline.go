@@ -258,12 +258,12 @@ Do not ask about things you can determine by reading the codebase. Only ask abou
 // and captures the session ID, transcript, result, and file operations.
 func executeViaClaude(userPrompt, reflectJSON string) (*executeResult, error) {
 	combined := fmt.Sprintf("%s\n\n## Memory context\n\n%s", userPrompt, reflectJSON)
-	return runClaudePrint([]string{"--print", "--output-format", "stream-json", "--system-prompt", executeSystemPrompt, "--allowedTools", "Read,Write,Edit,Grep,Glob,Bash"}, combined)
+	return runClaudePrint([]string{"--print", "--verbose", "--output-format", "stream-json", "--system-prompt", executeSystemPrompt, "--allowedTools", "Read,Write,Edit,Grep,Glob,Bash"}, combined)
 }
 
 // resumeViaClaude resumes an existing Claude session with a new prompt.
 func resumeViaClaude(claudeSessionID, userPrompt string) (*executeResult, error) {
-	return runClaudePrint([]string{"--print", "--output-format", "stream-json", "--allowedTools", "Read,Write,Edit,Grep,Glob,Bash", "--resume", claudeSessionID}, userPrompt)
+	return runClaudePrint([]string{"--print", "--verbose", "--output-format", "stream-json", "--allowedTools", "Read,Write,Edit,Grep,Glob,Bash", "--resume", claudeSessionID}, userPrompt)
 }
 
 // runClaude executes claude with the given args and stdin, parsing the JSON response.
@@ -565,7 +565,7 @@ func resumeWithClarification(s *store.SQLiteStore, sessionID, senseJSON, reflect
 
 	fmt.Fprintln(os.Stderr, "executing...")
 
-	result, err := runClaudePrint([]string{"--print", "--output-format", "stream-json", "--system-prompt", executeSystemPrompt, "--allowedTools", "Read,Write,Edit,Grep,Glob,Bash"}, combined)
+	result, err := runClaudePrint([]string{"--print", "--verbose", "--output-format", "stream-json", "--system-prompt", executeSystemPrompt, "--allowedTools", "Read,Write,Edit,Grep,Glob,Bash"}, combined)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "heb: %v\n", err)
 		return 1

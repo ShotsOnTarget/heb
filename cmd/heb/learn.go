@@ -78,7 +78,7 @@ You will receive:
 
   "lessons": [
     {
-      "observation": "subject·predicate·object",
+      "body":        "free-form text atom — terse, useful, greppable",
       "scope":       "project | universal_candidate",
       "confidence":  0.0,
       "evidence":    "what in the session supports this",
@@ -124,37 +124,28 @@ correction_count — length of corrections array.
 peak_intensity — max intensity, or 0.0.
 completed — true if the task was finished.
 
-lessons — what should be remembered. Tuple format: subject·predicate·object. Max 8. Min 0. Confidence >= 0.50.
+lessons — what should be remembered. Each lesson body is free-form text — terse, useful, greppable. No forced structure. Max 8. Min 0. Confidence >= 0.50. Keep atoms short: the system has a 120-token energy budget per session. Verbose atoms pay higher decay over time.
 
 ### What makes a valuable lesson
 
-A lesson must help a FUTURE agent working on this codebase. It is stored in a memory graph and recalled when tokens match. Ask: "if an agent sees this tuple in 3 months, does it save them from a mistake, answer a question, or reveal something non-obvious?"
+A lesson must help a FUTURE agent working on this codebase. It is stored in a memory graph and recalled via BM25 token matching. Ask: "if an agent matches this atom in 3 months, does it save them from a mistake, answer a question, or reveal something non-obvious?"
 
 DO NOT write lessons that merely describe what code changed. Git log and the code itself capture that. These have zero future recall value:
-- BAD: "dm.earned_cards·was_renamed_to·_reward_earned_cards" (git blame shows this)
-- BAD: "function_X·was_added_to·file_Y" (the code shows this)
-- BAD: "bug·was_fixed_in·file_Z" (the commit message says this)
+- BAD: "dm.earned_cards was renamed to _reward_earned_cards" (git blame shows this)
+- BAD: "function_X was added to file_Y" (the code shows this)
+- BAD: "bug was fixed in file_Z" (the commit message says this)
 
 Instead write lessons that capture WHY, WHEN, or HOW — things the code alone doesn't tell you:
-- GOOD: "frigate·cargo_bays·1" (answers a domain question without reading code)
-- GOOD: "elite_card_reward·tracks_via·_reward_earned_cards_not_dm" (non-obvious — the old name looks correct)
-- GOOD: "slot_defaults·can_be_overridden·per_slot_type_in_ship_data" (corrects a wrong assumption)
-- GOOD: "dm.earned_cards·is_deprecated·use_reward_tracker_locals_instead" (warns future agents away from a trap)
+- GOOD: "frigate cargo_bays 1" (answers a domain question without reading code)
+- GOOD: "elite_card_reward tracks via _reward_earned_cards not dm" (non-obvious — the old name looks correct)
+- GOOD: "slot_defaults can be overridden per slot_type in ship_data" (corrects a wrong assumption)
+- GOOD: "dm.earned_cards is deprecated use reward_tracker locals instead" (warns future agents away from a trap)
 
 ### Code anchor lessons
 
 When the session touched or discussed key functions, classes, constants, or
 scene nodes, extract **code anchor** lessons that map identifiers to their
-purpose. Use the identifier as the subject (e.g. _award_xp, XP_BASE,
-InfoBar, DeckManager). These are regular lessons — no special format.
-
-Predicate vocabulary for code anchors:
-- implements — function → concept it realizes
-- configures — constant/var → what it controls
-- creates — factory function → what it produces
-- manages — class/manager → domain it owns
-- entry_point_for — top-level function → workflow it starts
-- contains — container/node → what is inside it
+purpose. Include the identifier name so it's greppable.
 
 Only extract anchors that are greppable entry points (unique names that
 would find the right file in one search). Not local variables or generic
@@ -164,11 +155,11 @@ Code anchors DO NOT count against the 8-lesson maximum. Cap at 4 per session.
 Code anchor confidence should be >= 0.85 — they are directly observed facts, not inferences.
 
 Examples:
-- GOOD: "_award_xp·implements·xp_level_progression" (unique, greppable, maps code→concept)
-- GOOD: "XP_BASE·configures·xp_level_curve_base_value" (answers what this constant controls)
-- GOOD: "_create_stat_bar_row·creates·color_coded_stat_bar_with_dim_background" (captures pattern)
-- BAD: "var i·iterates·loop" (not unique, not useful)
-- BAD: "main.gd·contains·game_logic" (filename, not code identifier)
+- GOOD: "_award_xp implements xp_level_progression" (unique, greppable, maps code→concept)
+- GOOD: "XP_BASE configures xp_level_curve_base_value" (answers what this constant controls)
+- GOOD: "_create_stat_bar_row creates color_coded_stat_bar with dim_background" (captures pattern)
+- BAD: "var i iterates loop" (not unique, not useful)
+- BAD: "main.gd contains game_logic" (filename, not code identifier)
 
 ### Prediction correction lessons
 
@@ -192,7 +183,7 @@ Prediction reconciliation shape when present:
       "result":        "matched | partial | missed | wrong",
       "source_tuples": [],
       "event":         "prediction_confirmed | prediction_contradicted | null",
-      "lesson":        "subject·predicate·object or null"
+      "lesson":        "free-form text correction or null"
     }
   ],
   "matched_count": 0,
@@ -931,7 +922,8 @@ func commitSessionWork(repoRoot, learnJSON string, lessonsWritten int) error {
 	var learn struct {
 		RawPrompt string `json:"raw_prompt"`
 		Lessons   []struct {
-			Observation string `json:"observation"`
+			Body        string `json:"body"`
+			Observation string `json:"observation"` // backward compat
 		} `json:"lessons"`
 		Corrections []struct {
 			What       string `json:"what"`
@@ -1037,7 +1029,8 @@ func generateCommitMessage(repoRoot, rawPrompt, approach string, filesTouched []
 func printLearnSummary(learnJSON, verb string) {
 	var learn struct {
 		Lessons []struct {
-			Observation string  `json:"observation"`
+			Body        string  `json:"body"`
+			Observation string  `json:"observation"` // backward compat
 			Scope       string  `json:"scope"`
 			Confidence  float64 `json:"confidence"`
 		} `json:"lessons"`
@@ -1064,7 +1057,11 @@ func printLearnSummary(learnJSON, verb string) {
 	}
 
 	for _, l := range learn.Lessons {
-		fmt.Fprintf(os.Stderr, "  + %s  [%s %.2f]\n", l.Observation, l.Scope, l.Confidence)
+		body := l.Body
+		if body == "" {
+			body = l.Observation // backward compat
+		}
+		fmt.Fprintf(os.Stderr, "  + %s  [%s %.2f]\n", body, l.Scope, l.Confidence)
 	}
 	for _, c := range learn.Corrections {
 		fmt.Fprintf(os.Stderr, "  ! %s → %s  [%.1f]\n", c.What, c.Correction, c.Intensity)

@@ -12,9 +12,9 @@ func fakeMeasure(r *Result) int {
 	return 10 + len(r.Memories) + len(r.GitRefs) + len(r.Beads)
 }
 
-func mkMem(subject string, score float64, source string) store.Scored {
+func mkMem(body string, score float64, source string) store.Scored {
 	return store.Scored{
-		Memory: store.Memory{Subject: subject, Predicate: "p", Object: "o"},
+		Memory: store.Memory{Body: body},
 		Score:  score,
 		Source: source,
 	}
@@ -85,7 +85,7 @@ func TestTrimPreservesHardConstraint(t *testing.T) {
 	// All memories preserved (trimming is Recall's job now).
 	foundPinned := false
 	for _, m := range r.Memories {
-		if m.Subject == "!pinned" {
+		if m.Body == "!pinned" {
 			foundPinned = true
 		}
 	}

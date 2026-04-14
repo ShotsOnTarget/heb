@@ -27,7 +27,7 @@ func RenderHuman(r *Result) string {
 		if m.Source == "edge" {
 			tag = "edge "
 		}
-		fmt.Fprintf(&b, "  [%s %.2f] %s·+%.2f\n", tag, m.Score, m.TupleString(), m.Weight)
+		fmt.Fprintf(&b, "  [%s %.2f] %s +%.2f\n", tag, m.Score, m.Body, m.Weight)
 	}
 	b.WriteString("\n")
 

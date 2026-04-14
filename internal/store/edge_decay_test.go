@@ -35,11 +35,11 @@ func testDB(t *testing.T) *sql.DB {
 	return db
 }
 
-func seedMemory(t *testing.T, tx *sql.Tx, s, p, o string) string {
+func seedMemory(t *testing.T, tx *sql.Tx, body string) string {
 	t.Helper()
-	id := MemoryID(s, p, o)
-	_, err := tx.Exec(`INSERT INTO memories(id, subject, predicate, object, weight, status, created_at, updated_at)
-		VALUES(?, ?, ?, ?, 0.5, 'active', 1000, 1000)`, id, s, p, o)
+	id := MemoryID(body)
+	_, err := tx.Exec(`INSERT INTO memories(id, body, weight, status, created_at, updated_at)
+		VALUES(?, ?, 0.5, 'active', 1000, 1000)`, id, body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,8 +68,8 @@ func queryEdge(t *testing.T, db *sql.DB, id1, id2 string) (float64, int) {
 func TestUpdateEdgeCoActivation(t *testing.T) {
 	db := testDB(t)
 	tx, _ := db.Begin()
-	aID := seedMemory(t, tx, "a", "p", "x")
-	bID := seedMemory(t, tx, "b", "p", "y")
+	aID := seedMemory(t, tx, "a p x")
+	bID := seedMemory(t, tx, "b p y")
 
 	// First co-activation: creates edge with count=1
 	if err := UpdateEdge(tx, aID, bID, 0.06, true); err != nil {
@@ -119,8 +119,8 @@ func TestUpdateEdgeCoActivation(t *testing.T) {
 func TestDecayEdge(t *testing.T) {
 	db := testDB(t)
 	tx, _ := db.Begin()
-	aID := seedMemory(t, tx, "a", "p", "x")
-	bID := seedMemory(t, tx, "b", "p", "y")
+	aID := seedMemory(t, tx, "a p x")
+	bID := seedMemory(t, tx, "b p y")
 	if err := UpdateEdge(tx, aID, bID, 0.06, true); err != nil {
 		t.Fatal(err)
 	}
@@ -145,8 +145,8 @@ func TestDecayEdge(t *testing.T) {
 func TestDecayEdgeClampsAtZero(t *testing.T) {
 	db := testDB(t)
 	tx, _ := db.Begin()
-	aID := seedMemory(t, tx, "a", "p", "x")
-	bID := seedMemory(t, tx, "b", "p", "y")
+	aID := seedMemory(t, tx, "a p x")
+	bID := seedMemory(t, tx, "b p y")
 	if err := UpdateEdge(tx, aID, bID, 0.02, false); err != nil {
 		t.Fatal(err)
 	}
@@ -168,9 +168,9 @@ func TestDecayEdgeClampsAtZero(t *testing.T) {
 func TestEdgesFor(t *testing.T) {
 	db := testDB(t)
 	tx, _ := db.Begin()
-	aID := seedMemory(t, tx, "a", "p", "x")
-	bID := seedMemory(t, tx, "b", "p", "y")
-	cID := seedMemory(t, tx, "c", "p", "z")
+	aID := seedMemory(t, tx, "a p x")
+	bID := seedMemory(t, tx, "b p y")
+	cID := seedMemory(t, tx, "c p z")
 	if err := UpdateEdge(tx, aID, bID, 0.06, true); err != nil {
 		t.Fatal(err)
 	}
@@ -205,14 +205,14 @@ func TestEdgesFor(t *testing.T) {
 func TestDecayEdgeNonExistent(t *testing.T) {
 	db := testDB(t)
 	tx, _ := db.Begin()
-	seedMemory(t, tx, "a", "p", "x")
-	seedMemory(t, tx, "b", "p", "y")
+	seedMemory(t, tx, "a p x")
+	seedMemory(t, tx, "b p y")
 	tx.Commit()
 
 	// Decay a non-existent edge — should be a no-op
 	tx, _ = db.Begin()
-	aID := MemoryID("a", "p", "x")
-	bID := MemoryID("b", "p", "y")
+	aID := MemoryID("a p x")
+	bID := MemoryID("b p y")
 	if err := DecayEdge(tx, aID, bID, -0.005); err != nil {
 		t.Fatal(err)
 	}

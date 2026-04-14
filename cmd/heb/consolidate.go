@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 
 	"github.com/steelboltgames/heb/internal/consolidate"
 	"github.com/steelboltgames/heb/internal/store"
@@ -163,7 +162,7 @@ func applyMemoryDeltas(tx *sql.Tx, p consolidate.Payload, result *consolidate.Re
 	for _, md := range p.Memories {
 		id, w, wasNew, err := store.ApplyMemoryEvent(
 			tx,
-			md.Subject, md.Predicate, md.Object,
+			md.Body,
 			md.Event, md.Reason,
 			p.SessionID, p.BeadID, p.TopicTokens,
 			md.DeltaNew, md.DeltaReinforce,
@@ -179,7 +178,7 @@ func applyMemoryDeltas(tx *sql.Tx, p consolidate.Payload, result *consolidate.Re
 			eventKind = "created"
 		}
 		result.Applied = append(result.Applied, consolidate.MemoryApply{
-			ID: id, Subject: md.Subject, Predicate: md.Predicate, Object: md.Object,
+			ID: id, Body: md.Body,
 			Event: eventKind, NewWeight: w, WasNew: wasNew,
 		})
 		if md.Event == "entanglement_signal" {
@@ -191,8 +190,8 @@ func applyMemoryDeltas(tx *sql.Tx, p consolidate.Payload, result *consolidate.Re
 
 func applyEdgeDeltas(tx *sql.Tx, p consolidate.Payload, result *consolidate.Result) error {
 	for _, ed := range p.Edges {
-		aID := store.MemoryID(ed.A.Subject, ed.A.Predicate, ed.A.Object)
-		bID := store.MemoryID(ed.B.Subject, ed.B.Predicate, ed.B.Object)
+		aID := store.MemoryID(ed.ABody)
+		bID := store.MemoryID(ed.BBody)
 		if err := store.UpdateEdge(tx, aID, bID, ed.Delta, ed.CoActivation); err != nil {
 			return fmt.Errorf("edge: %w", err)
 		}
@@ -239,7 +238,7 @@ func applyEdgeDecay(tx *sql.Tx, db *sql.DB, lr *consolidate.LearnResult, cfg *co
 
 		writtenSet := make(map[string]bool, len(lr.Lessons))
 		for _, l := range lr.Lessons {
-			writtenSet[l.Observation] = true
+			writtenSet[l.Body] = true
 		}
 
 		for _, tuple := range lr.RecalledViaEdges {
@@ -308,14 +307,13 @@ func decayEdgesForTuple(tx *sql.Tx, db *sql.DB, tuple string, delta float64, thr
 	}
 }
 
-// tupleToMemoryID splits a "subject·predicate·object" string and
-// returns the memory ID, or "" if the tuple is malformed.
-func tupleToMemoryID(tuple string) string {
-	parts := strings.Split(tuple, "\u00b7")
-	if len(parts) != 3 {
+// tupleToMemoryID returns the memory ID for a body string.
+// Returns "" if the body is empty.
+func tupleToMemoryID(body string) string {
+	if body == "" {
 		return ""
 	}
-	return store.MemoryID(parts[0], parts[1], parts[2])
+	return store.MemoryID(body)
 }
 
 // emit writes the result to stdout per the --format flag.
