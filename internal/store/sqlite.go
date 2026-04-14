@@ -18,7 +18,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const SchemaVersion = 5
+const SchemaVersion = 6
 
 // Store is the memory store interface. Commands depend on this, not on
 // any concrete backend.
@@ -136,6 +136,9 @@ func Open(repoRoot string) (*SQLiteStore, error) {
 	db.Exec(`ALTER TABLE transcript_log ADD COLUMN role TEXT NOT NULL DEFAULT 'assistant'`)
 	// v6: add topic_tokens to memories for edge filtering and scoped decay.
 	db.Exec(`ALTER TABLE memories ADD COLUMN topic_tokens TEXT NOT NULL DEFAULT ''`)
+	// v7: migrate SPO columns to body (cell assembly model).
+	db.Exec(`ALTER TABLE memories ADD COLUMN body TEXT NOT NULL DEFAULT ''`)
+	db.Exec(`UPDATE memories SET body = subject || ' ' || predicate || ' ' || object WHERE body = '' AND subject IS NOT NULL AND subject != ''`)
 	// Bump schema version if behind.
 	if _, err := db.Exec(
 		`UPDATE meta SET value = ? WHERE key = 'schema_version' AND CAST(value AS INTEGER) < ?`,
@@ -191,18 +194,13 @@ func OpenGlobal() (*SQLiteStore, error) {
 const schemaSQL = `
 CREATE TABLE IF NOT EXISTS memories (
     id           TEXT PRIMARY KEY,
-    subject      TEXT NOT NULL,
-    predicate    TEXT NOT NULL,
-    object       TEXT NOT NULL,
+    body         TEXT NOT NULL,
     weight       REAL NOT NULL DEFAULT 0,
     status       TEXT NOT NULL DEFAULT 'active',
     topic_tokens TEXT NOT NULL DEFAULT '',
     created_at   INTEGER NOT NULL,
     updated_at   INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_memories_subject   ON memories(subject);
-CREATE INDEX IF NOT EXISTS idx_memories_predicate ON memories(predicate);
-CREATE INDEX IF NOT EXISTS idx_memories_object    ON memories(object);
 CREATE INDEX IF NOT EXISTS idx_memories_weight    ON memories(weight);
 CREATE INDEX IF NOT EXISTS idx_memories_status    ON memories(status);
 

@@ -9,14 +9,14 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/steelboltgames/heb/internal/memory"
 )
 
-// Memory is a weighted subject-predicate-object tuple.
+// Memory is a weighted text pattern (cell assembly).
 type Memory struct {
 	ID          string  `json:"id"`
-	Subject     string  `json:"subject"`
-	Predicate   string  `json:"predicate"`
-	Object      string  `json:"object"`
+	Body        string  `json:"body"`
 	Weight      float64 `json:"weight"`
 	Status      string  `json:"status"`
 	TopicTokens string  `json:"topic_tokens,omitempty"` // comma-separated sense tokens from the session that created/last reinforced this memory
@@ -27,20 +27,23 @@ type Memory struct {
 // Scored is a memory with a recall score attached.
 type Scored struct {
 	Memory
-	Tuple  string  `json:"tuple"`
 	Score  float64 `json:"score"`
 	Source string  `json:"source"` // "match" or "edge"
 }
 
-// TupleString joins subject/predicate/object with the U+00B7 separator
-// used throughout the slash command layer.
+// TupleString returns the body text (kept for API compatibility).
 func (m Memory) TupleString() string {
-	return m.Subject + "\u00b7" + m.Predicate + "\u00b7" + m.Object
+	return m.Body
 }
 
-// MemoryID is the deterministic ID for a SPO tuple. Lowercased,
-// trimmed, joined with U+001F (unit separator), sha1'd.
-func MemoryID(subject, predicate, object string) string {
+// MemoryID returns the deterministic content-address for a body.
+func MemoryID(body string) string {
+	return memory.ID(body)
+}
+
+// MemoryIDLegacy computes ID the old way for migration comparison.
+// Deprecated: use MemoryID(body) instead.
+func MemoryIDLegacy(subject, predicate, object string) string {
 	s := strings.ToLower(strings.TrimSpace(subject))
 	p := strings.ToLower(strings.TrimSpace(predicate))
 	o := strings.ToLower(strings.TrimSpace(object))
@@ -55,8 +58,8 @@ func MemoryID(subject, predicate, object string) string {
 // "created". If the memory already exists, deltaReinforce is applied
 // and the passed kind is used as-is. Callers that want a single delta
 // regardless of existence can pass the same value for both.
-func ApplyMemoryEvent(tx *sql.Tx, subject, predicate, object, kind, reason, sessionID, beadID, topicTokens string, deltaNew, deltaReinforce float64) (id string, newWeight float64, wasNew bool, err error) {
-	id = MemoryID(subject, predicate, object)
+func ApplyMemoryEvent(tx *sql.Tx, body, kind, reason, sessionID, beadID, topicTokens string, deltaNew, deltaReinforce float64) (id string, newWeight float64, wasNew bool, err error) {
+	id = memory.ID(body)
 	now := time.Now().UTC().Unix()
 
 	// Detect existence first so we know which delta + event kind to use.
@@ -76,9 +79,9 @@ func ApplyMemoryEvent(tx *sql.Tx, subject, predicate, object, kind, reason, sess
 		delta = deltaNew
 		eventKind = "created"
 		_, err = tx.Exec(`
-			INSERT INTO memories(id, subject, predicate, object, weight, status, topic_tokens, created_at, updated_at)
-			VALUES(?, ?, ?, ?, MAX(0, ?), 'active', ?, ?, ?)
-		`, id, subject, predicate, object, delta, topicTokens, now, now)
+			INSERT INTO memories(id, body, weight, status, topic_tokens, created_at, updated_at)
+			VALUES(?, ?, MAX(0, ?), 'active', ?, ?, ?)
+		`, id, body, delta, topicTokens, now, now)
 		if err != nil {
 			return "", 0, false, fmt.Errorf("insert memory: %w", err)
 		}
@@ -241,7 +244,7 @@ func Recall(db *sql.DB, tokens []string, limit int) ([]Scored, error) {
 		limit = RecallLimit
 	}
 
-	rows, err := db.Query(`SELECT id, subject, predicate, object, weight, status, topic_tokens, created_at, updated_at FROM memories WHERE status = 'active'`)
+	rows, err := db.Query(`SELECT id, body, weight, status, topic_tokens, created_at, updated_at FROM memories WHERE status = 'active'`)
 	if err != nil {
 		return nil, fmt.Errorf("scan memories: %w", err)
 	}
@@ -261,17 +264,16 @@ func Recall(db *sql.DB, tokens []string, limit int) ([]Scored, error) {
 
 	for rows.Next() {
 		var m Memory
-		if err := rows.Scan(&m.ID, &m.Subject, &m.Predicate, &m.Object, &m.Weight, &m.Status, &m.TopicTokens, &m.CreatedAt, &m.UpdatedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.Body, &m.Weight, &m.Status, &m.TopicTokens, &m.CreatedAt, &m.UpdatedAt); err != nil {
 			return nil, err
 		}
-		hay := strings.ToLower(m.Subject + " " + m.Predicate + " " + m.Object)
-		words := splitWords(hay)
+		words := memory.Tokenize(m.Body)
 		corpusSize++
 		corpusWords += len(words)
 		var hits []int
 		for i, t := range tokens {
 			tt := strings.ToLower(strings.TrimSpace(t))
-			if tt != "" && matchesWord(words, tt) {
+			if tt != "" && memory.MatchesWord(words, tt) {
 				hits = append(hits, i)
 				docFreq[i]++
 			}
@@ -315,7 +317,7 @@ func Recall(db *sql.DB, tokens []string, limit int) ([]Scored, error) {
 		}
 		// Weight as mild tiebreaker: ±30% influence, not dominant.
 		score := bm25 * (0.7 + 0.3*c.mem.Weight)
-		scored = append(scored, Scored{Memory: c.mem, Tuple: c.mem.TupleString(), Score: score, Source: "match"})
+		scored = append(scored, Scored{Memory: c.mem, Score: score, Source: "match"})
 	}
 
 	sort.Slice(scored, func(i, j int) bool { return scored[i].Score > scored[j].Score })
@@ -331,7 +333,7 @@ func Recall(db *sql.DB, tokens []string, limit int) ([]Scored, error) {
 	var neighbours []Scored
 	for _, s := range scored {
 		nrows, err := db.Query(`
-			SELECT m.id, m.subject, m.predicate, m.object, m.weight, m.status, m.topic_tokens, m.created_at, m.updated_at, e.strength
+			SELECT m.id, m.body, m.weight, m.status, m.topic_tokens, m.created_at, m.updated_at, e.strength
 			FROM edges e
 			JOIN memories m ON m.id = CASE WHEN e.a_id = ? THEN e.b_id ELSE e.a_id END
 			WHERE (e.a_id = ? OR e.b_id = ?) AND e.strength > 0 AND m.status = 'active'
@@ -342,7 +344,7 @@ func Recall(db *sql.DB, tokens []string, limit int) ([]Scored, error) {
 		for nrows.Next() {
 			var m Memory
 			var strength float64
-			if err := nrows.Scan(&m.ID, &m.Subject, &m.Predicate, &m.Object, &m.Weight, &m.Status, &m.TopicTokens, &m.CreatedAt, &m.UpdatedAt, &strength); err != nil {
+			if err := nrows.Scan(&m.ID, &m.Body, &m.Weight, &m.Status, &m.TopicTokens, &m.CreatedAt, &m.UpdatedAt, &strength); err != nil {
 				nrows.Close()
 				return nil, err
 			}
@@ -352,7 +354,6 @@ func Recall(db *sql.DB, tokens []string, limit int) ([]Scored, error) {
 			seen[m.ID] = true
 			neighbours = append(neighbours, Scored{
 				Memory: m,
-				Tuple:  m.TupleString(),
 				Score:  m.Weight*0.5 + strength*0.5,
 				Source: "edge",
 			})
@@ -366,7 +367,7 @@ func Recall(db *sql.DB, tokens []string, limit int) ([]Scored, error) {
 	if len(combined) > limit {
 		var pinned, rest []Scored
 		for _, s := range combined {
-			if strings.HasPrefix(s.Subject, "!") {
+			if strings.HasPrefix(s.Body, "!") {
 				pinned = append(pinned, s)
 			} else {
 				rest = append(rest, s)
@@ -415,26 +416,6 @@ func attentionFilter(scored []Scored, limit int) []Scored {
 }
 
 
-// splitWords breaks a string on word boundaries (spaces, underscores,
-// hyphens, dots) into lowercase tokens. Used for word-boundary matching
-// in Recall so that "low" doesn't match inside "follow" or "slowed".
-func splitWords(s string) []string {
-	return strings.FieldsFunc(s, func(r rune) bool {
-		return r == ' ' || r == '_' || r == '-' || r == '.'
-	})
-}
-
-// matchesWord returns true if needle equals any word in hayWords.
-// This is whole-word matching — "low" matches the word "low" but not
-// "follow" or "slowed".
-func matchesWord(hayWords []string, needle string) bool {
-	for _, w := range hayWords {
-		if w == needle {
-			return true
-		}
-	}
-	return false
-}
 
 func nullIfEmpty(s string) any {
 	if s == "" {
@@ -499,7 +480,7 @@ func DreamSeeds(db *sql.DB, limit int) ([]Memory, error) {
 		limit = 3
 	}
 	rows, err := db.Query(`
-		SELECT m.id, m.subject, m.predicate, m.object, m.weight, m.status,
+		SELECT m.id, m.body, m.weight, m.status,
 		       m.topic_tokens, m.created_at, m.updated_at
 		FROM memories m
 		LEFT JOIN edges e ON m.id = e.a_id OR m.id = e.b_id
@@ -520,7 +501,7 @@ func DreamSeeds(db *sql.DB, limit int) ([]Memory, error) {
 	var result []Memory
 	for rows.Next() {
 		var m Memory
-		if err := rows.Scan(&m.ID, &m.Subject, &m.Predicate, &m.Object, &m.Weight, &m.Status, &m.TopicTokens, &m.CreatedAt, &m.UpdatedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.Body, &m.Weight, &m.Status, &m.TopicTokens, &m.CreatedAt, &m.UpdatedAt); err != nil {
 			return nil, err
 		}
 		result = append(result, m)
@@ -542,8 +523,7 @@ func DreamRandomPairs(db *sql.DB, limit int) ([]DreamPair, error) {
 		limit = 5
 	}
 	rows, err := db.Query(`
-		SELECT m1.id, m1.subject, m1.predicate, m1.object,
-		       m2.id, m2.subject, m2.predicate, m2.object
+		SELECT m1.id, m1.body, m2.id, m2.body
 		FROM memories m1, memories m2
 		WHERE m1.id < m2.id
 		  AND m1.status = 'active' AND m2.status = 'active'
@@ -560,16 +540,15 @@ func DreamRandomPairs(db *sql.DB, limit int) ([]DreamPair, error) {
 
 	var result []DreamPair
 	for rows.Next() {
-		var aID, aSub, aPred, aObj string
-		var bID, bSub, bPred, bObj string
-		if err := rows.Scan(&aID, &aSub, &aPred, &aObj, &bID, &bSub, &bPred, &bObj); err != nil {
+		var aID, aBody, bID, bBody string
+		if err := rows.Scan(&aID, &aBody, &bID, &bBody); err != nil {
 			return nil, err
 		}
 		result = append(result, DreamPair{
 			AID:    aID,
 			BID:    bID,
-			ATuple: aSub + "\u00b7" + aPred + "\u00b7" + aObj,
-			BTuple: bSub + "\u00b7" + bPred + "\u00b7" + bObj,
+			ATuple: aBody,
+			BTuple: bBody,
 		})
 	}
 	return result, nil
