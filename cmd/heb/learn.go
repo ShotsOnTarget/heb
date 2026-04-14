@@ -898,6 +898,9 @@ func runRemember(args []string) int {
 		return 1
 	}
 
+	// Hippocampal replay: chunk verbose lessons into terse atoms via cheap LLM.
+	lr.Lessons = chunkLessons(lr.Lessons)
+
 	result := consolidate.Run(lr, cfg)
 	if err := applyPayload(&result, &lr, &cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "heb: consolidate: %v\n", err)

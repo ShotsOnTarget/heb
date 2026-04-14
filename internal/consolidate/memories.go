@@ -23,6 +23,7 @@ func buildMemoryDeltas(c LearnResult, cfg Config) ([]MemoryDelta, []SkippedTuple
 		tokens     int
 	}
 	var candidates []cand
+	var skipped []SkippedTuple
 
 	// Collect regular lessons
 	for _, lesson := range c.Lessons {
@@ -60,14 +61,18 @@ func buildMemoryDeltas(c LearnResult, cfg Config) ([]MemoryDelta, []SkippedTuple
 		}
 	}
 
-	// Sort by confidence descending for energy budget allocation
+	// Apply verbosity penalty: verbose atoms compete worse mechanically.
+	for i := range candidates {
+		candidates[i].confidence *= memory.VerbosityCost(candidates[i].tokens)
+	}
+
+	// Sort by (penalised) confidence descending for energy budget allocation
 	sort.Slice(candidates, func(i, j int) bool {
 		return candidates[i].confidence > candidates[j].confidence
 	})
 
 	// Apply energy budget
 	var deltas []MemoryDelta
-	var skipped []SkippedTuple
 	budgetUsed := 0
 
 	for _, c := range candidates {

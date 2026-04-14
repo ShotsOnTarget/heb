@@ -14,6 +14,22 @@ const Sep = "\u00b7"
 // confidence-descending order until this budget is exhausted.
 const SessionEnergyBudget = 120
 
+// AtomTokenCap is the ideal maximum token count for a single atom.
+// Atoms at or below this length pay no verbosity penalty. Atoms above
+// this get their effective confidence scaled down proportionally,
+// mechanically discouraging verbose atoms without relying on the LLM.
+const AtomTokenCap = 12
+
+// VerbosityCost returns a multiplier in (0, 1] that penalises atoms
+// exceeding AtomTokenCap. At or below the cap → 1.0 (no penalty).
+// Double the cap → 0.5. Triple → 0.33. Pure math, no LLM trust.
+func VerbosityCost(tokenCount int) float64 {
+	if tokenCount <= AtomTokenCap {
+		return 1.0
+	}
+	return float64(AtomTokenCap) / float64(tokenCount)
+}
+
 // Atom is the atomic unit of memory — a weighted text pattern (cell assembly).
 // No forced structure. The body is free-form text that the learn step produces
 // and the retrieve step matches against via BM25.

@@ -80,6 +80,9 @@ func runLearnResult(data []byte, cfg consolidate.Config) (consolidate.Result, er
 		return consolidate.Result{SessionID: c.SessionID}, fmt.Errorf("project required")
 	}
 
+	// Hippocampal replay: chunk verbose lessons into terse atoms.
+	c.Lessons = chunkLessons(c.Lessons)
+
 	result := consolidate.Run(c, cfg)
 	if err := applyPayload(&result, &c, &cfg); err != nil {
 		return result, err

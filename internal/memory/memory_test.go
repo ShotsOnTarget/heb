@@ -52,6 +52,25 @@ func TestID(t *testing.T) {
 	}
 }
 
+func TestVerbosityCost(t *testing.T) {
+	tests := []struct {
+		tokens int
+		want   float64
+	}{
+		{1, 1.0},                             // well under cap
+		{AtomTokenCap, 1.0},                  // exactly at cap
+		{AtomTokenCap * 2, 0.5},              // double cap → halved
+		{AtomTokenCap * 3, 1.0 / 3.0},        // triple cap
+		{AtomTokenCap + 1, float64(AtomTokenCap) / float64(AtomTokenCap+1)}, // just over
+	}
+	for _, tt := range tests {
+		got := VerbosityCost(tt.tokens)
+		if got != tt.want {
+			t.Errorf("VerbosityCost(%d) = %v, want %v", tt.tokens, got, tt.want)
+		}
+	}
+}
+
 func TestTokenizeEdgeCases(t *testing.T) {
 	// Middle dot is a delimiter
 	got := Tokenize("heb_pipeline·must_not·stop")

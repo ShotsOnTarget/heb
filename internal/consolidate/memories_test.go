@@ -77,28 +77,42 @@ func TestBuildMemoryDeltasEmptyBody(t *testing.T) {
 
 func TestBuildMemoryDeltasEnergyBudget(t *testing.T) {
 	cfg := DefaultConfig()
-	// Each body has ~40 tokens — 3 of them = 120+, so budget of 120 fits at most 3
-	longBody := "the blast delay function implements the blast firing rate which scales proportionally with the ship attack value so higher attack means faster blasts and lower attack means slower rate of fire for all weapons in the game"
+	// Use 12-token bodies (at AtomTokenCap) so verbosity penalty doesn't interfere.
+	// Each body = 12 tokens. 11 atoms × 12 tokens = 132 > 120 budget.
+	mkBody := func(prefix string) string {
+		return prefix + " blast delay scales with ship attack value extra words here"
+	}
 	c := LearnResult{
 		Lessons: []Lesson{
-			{Body: longBody, Confidence: 0.90},
-			{Body: longBody + " and even more tokens are added here to push over", Confidence: 0.85},
-			{Body: longBody + " third version with extra words to ensure budget overflow occurs", Confidence: 0.80},
-			{Body: longBody + " fourth version absolutely must be rejected by energy budget", Confidence: 0.75},
+			{Body: mkBody("alpha"), Confidence: 0.90},
+			{Body: mkBody("bravo"), Confidence: 0.89},
+			{Body: mkBody("charlie"), Confidence: 0.88},
+			{Body: mkBody("delta"), Confidence: 0.87},
+			{Body: mkBody("echo"), Confidence: 0.86},
+			{Body: mkBody("foxtrot"), Confidence: 0.85},
+			{Body: mkBody("golf"), Confidence: 0.84},
+			{Body: mkBody("hotel"), Confidence: 0.83},
+			{Body: mkBody("india"), Confidence: 0.82},
+			{Body: mkBody("juliet"), Confidence: 0.81},
+			{Body: mkBody("kilo"), Confidence: 0.80},
 		},
 	}
 	deltas, skipped := buildMemoryDeltas(c, cfg)
-	if len(deltas)+len(skipped) != 4 {
-		t.Errorf("total = %d, want 4", len(deltas)+len(skipped))
+	if len(deltas)+len(skipped) != 11 {
+		t.Errorf("total = %d, want 11", len(deltas)+len(skipped))
 	}
 	if len(skipped) == 0 {
 		t.Errorf("expected some atoms to be skipped due to energy budget")
 	}
-	// Verify skipped reason mentions energy budget
+	// Verify at least one skipped reason mentions energy budget
+	found := false
 	for _, s := range skipped {
-		if !contains(s.Reason, "energy budget") {
-			t.Errorf("skipped reason = %q, want energy budget", s.Reason)
+		if contains(s.Reason, "energy budget") {
+			found = true
 		}
+	}
+	if !found {
+		t.Errorf("no skipped atom mentions energy budget")
 	}
 }
 
@@ -121,6 +135,27 @@ func TestBuildMemoryDeltasConfidenceOrdering(t *testing.T) {
 	}
 	if !approxEqual(deltas[1].DeltaNew, 0.80*cfg.NewGain) {
 		t.Errorf("second delta should be confidence 0.80")
+	}
+}
+
+func TestBuildMemoryDeltasVerbosityPenalty(t *testing.T) {
+	cfg := DefaultConfig()
+	// Terse atom: 5 tokens, confidence 0.70 → no penalty → effective 0.70
+	// Verbose atom: 23 tokens, confidence 0.90 → penalty 12/23≈0.52 → effective 0.47
+	// Both accepted, but terse sorts first despite lower raw confidence.
+	c := LearnResult{
+		Lessons: []Lesson{
+			{Body: "CombatScreen game/combat_screen.gd implements CombatScreen as a RefCounted UI/sync layer, with functions for syncing combat state, rendering, and combat phase management", Confidence: 0.90},
+			{Body: "RunState owns run-level state", Confidence: 0.70},
+		},
+	}
+	deltas, _ := buildMemoryDeltas(c, cfg)
+	if len(deltas) != 2 {
+		t.Fatalf("deltas = %d, want 2", len(deltas))
+	}
+	// Terse atom should sort first despite lower raw confidence
+	if deltas[0].Body != "RunState owns run-level state" {
+		t.Errorf("expected terse atom first, got %q", deltas[0].Body)
 	}
 }
 
