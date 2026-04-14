@@ -2,6 +2,7 @@ package retrieve
 
 import (
 	"bytes"
+	"sort"
 	"strings"
 )
 
@@ -14,16 +15,20 @@ type GitRef struct {
 
 // gitPass executes the full git log retrieval cascade for the given
 // contract:sense>recall tokens and returns up to cfg.GitCap deduplicated refs
-// across all tokens. Processing is in-order-with-early-stop (spec §7).
+// across all tokens. Tokens are IDF-sorted (rarest first by file grep count)
+// so specific tokens like "jettison" get processed before generic ones like
+// "feature" that would otherwise exhaust the cap with noise.
 func gitPass(tokens []string, runner Runner, cfg Config) []GitRef {
 	if cfg.NoExternal {
 		return nil
 	}
 
+	sorted := idfSort(tokens, runner, cfg)
+
 	var all []GitRef
 	seen := make(map[string]bool)
 
-	for _, token := range tokens {
+	for _, token := range sorted {
 		if len(all) >= cfg.GitCap {
 			break
 		}
@@ -43,6 +48,29 @@ func gitPass(tokens []string, runner Runner, cfg Config) []GitRef {
 		}
 	}
 	return all
+}
+
+// idfSort reorders tokens by file grep frequency (ascending). Tokens that
+// match fewer files are more specific and processed first, mirroring BM25's
+// IDF insight: rare terms carry more signal. Stable sort preserves original
+// order among tokens with equal frequency.
+func idfSort(tokens []string, runner Runner, cfg Config) []string {
+	type ranked struct {
+		token string
+		count int
+	}
+	items := make([]ranked, len(tokens))
+	for i, t := range tokens {
+		items[i] = ranked{token: t, count: len(grepFiles(t, runner, cfg))}
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		return items[i].count < items[j].count
+	})
+	out := make([]string, len(items))
+	for i, item := range items {
+		out[i] = item.token
+	}
+	return out
 }
 
 // lookupLiteral runs the L1 file grep + git log, falling back to L2

@@ -146,6 +146,106 @@ func TestGitDedupeAcrossTokens(t *testing.T) {
 	}
 }
 
+// TestIDFSortRarestFirst verifies that tokens are reordered so that tokens
+// matching fewer files (more specific) come first.
+func TestIDFSortRarestFirst(t *testing.T) {
+	cfg := DefaultConfig()
+	fr := &FakeRunner{
+		Responses: map[string]FakeResponse{
+			// "feature" matches 5 files (generic)
+			"grep -rl feature . --include=*.gd": {Stdout: []byte("a.gd\nb.gd\nc.gd\nd.gd\ne.gd\n")},
+			// "user" matches 3 files
+			"grep -rl user . --include=*.gd": {Stdout: []byte("a.gd\nb.gd\nc.gd\n")},
+			// "jettison" matches 1 file (specific)
+			"grep -rl jettison . --include=*.gd": {Stdout: []byte("cargo.gd\n")},
+			// "cargo" matches 2 files
+			"grep -rl cargo . --include=*.gd": {Stdout: []byte("cargo.gd\nbay.gd\n")},
+		},
+	}
+	sorted := idfSort([]string{"feature", "user", "jettison", "cargo"}, fr, cfg)
+	if len(sorted) != 4 {
+		t.Fatalf("got %d tokens, want 4", len(sorted))
+	}
+	// jettison (1) < cargo (2) < user (3) < feature (5)
+	want := []string{"jettison", "cargo", "user", "feature"}
+	for i, w := range want {
+		if sorted[i] != w {
+			t.Errorf("sorted[%d] = %q, want %q (full: %v)", i, sorted[i], w, sorted)
+			break
+		}
+	}
+}
+
+// TestIDFSortStable verifies stable sort preserves original order for tokens
+// with equal file grep counts.
+func TestIDFSortStable(t *testing.T) {
+	cfg := DefaultConfig()
+	fr := &FakeRunner{
+		Responses: map[string]FakeResponse{
+			"grep -rl alpha . --include=*.gd": {Stdout: []byte("x.gd\n")},
+			"grep -rl beta . --include=*.gd":  {Stdout: []byte("y.gd\n")},
+			"grep -rl gamma . --include=*.gd": {Stdout: []byte("z.gd\n")},
+		},
+	}
+	sorted := idfSort([]string{"alpha", "beta", "gamma"}, fr, cfg)
+	// All have count=1, stable sort preserves input order.
+	want := []string{"alpha", "beta", "gamma"}
+	for i, w := range want {
+		if sorted[i] != w {
+			t.Errorf("sorted[%d] = %q, want %q", i, sorted[i], w)
+		}
+	}
+}
+
+// TestIDFSortZeroHitsFirst verifies tokens with no file matches (count=0)
+// sort before tokens with matches — they'll fall through to L2 message grep
+// or decomposition quickly without wasting budget.
+func TestIDFSortZeroHitsFirst(t *testing.T) {
+	cfg := DefaultConfig()
+	fr := &FakeRunner{
+		Responses: map[string]FakeResponse{
+			"grep -rl common . --include=*.gd": {Stdout: []byte("a.gd\nb.gd\nc.gd\n")},
+			"grep -rl rare . --include=*.gd":   {Err: errors.New("no match")},
+		},
+	}
+	sorted := idfSort([]string{"common", "rare"}, fr, cfg)
+	if sorted[0] != "rare" {
+		t.Errorf("zero-hit token should sort first, got %v", sorted)
+	}
+}
+
+// TestGitPassIDFOrdering verifies the full gitPass pipeline processes rare
+// tokens before common ones, so specific commits surface instead of noise.
+func TestGitPassIDFOrdering(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.GitCap = 3 // tight cap to prove ordering matters
+
+	fr := &FakeRunner{
+		Responses: map[string]FakeResponse{
+			// IDF sort phase: "feature" matches 5 files, "jettison" matches 1
+			"grep -rl feature . --include=*.gd":  {Stdout: []byte("a.gd\nb.gd\nc.gd\nd.gd\ne.gd\n")},
+			"grep -rl jettison . --include=*.gd": {Stdout: []byte("cargo.gd\n")},
+			// jettison lookup (processed first due to IDF sort)
+			"git log --format=%h%x00%s%x00%cr%x00 -z -10 --all -- cargo.gd": {
+				Stdout: []byte("jet1\x00feat: cargo jettison\x001d\x00jet2\x00fix: jettison bug\x002d\x00jet3\x00refactor: cargo bay\x003d\x00"),
+			},
+			// feature lookup (processed second, but cap already hit)
+			"git log --format=%h%x00%s%x00%cr%x00 -z -10 --all -- a.gd b.gd c.gd d.gd e.gd": {
+				Stdout: []byte("feat1\x00feat: combat system\x001d\x00feat2\x00fix: rift screen\x002d\x00"),
+			},
+		},
+	}
+
+	refs := gitPass([]string{"feature", "jettison"}, fr, cfg)
+	if len(refs) != 3 {
+		t.Fatalf("got %d refs, want 3", len(refs))
+	}
+	// All 3 should be jettison-related since it's processed first (rarest)
+	if refs[0].Hash != "jet1" {
+		t.Errorf("ref0 = %q, want jet1 (jettison should be processed first)", refs[0].Hash)
+	}
+}
+
 // TestGitNoExternal verifies --no-external returns nil without calling runner.
 func TestGitNoExternal(t *testing.T) {
 	cfg := DefaultConfig()
