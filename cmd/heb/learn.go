@@ -124,7 +124,13 @@ correction_count — length of corrections array.
 peak_intensity — max intensity, or 0.0.
 completed — true if the task was finished.
 
-lessons — what should be remembered. Each lesson body is free-form text — terse, useful, greppable. No forced structure. Max 8. Min 0. Confidence >= 0.50. Keep atoms short: the system has a 120-token energy budget per session. Verbose atoms pay higher decay over time.
+lessons — what should be remembered. Each lesson body is free-form text — terse, useful, greppable. No forced structure. Max 8. Min 0. Confidence >= 0.50.
+
+HARD SIZE RULE: Each atom MUST be ≤ 12 words. No exceptions. If an insight needs more words, split it into 2-3 separate atoms. Verbose atoms are mechanically penalised — the system multiplies confidence by (12 / word_count) for atoms exceeding 12 words, so a 24-word atom competes at half confidence. Write terse or get filtered.
+
+Format: noun-verb-noun preferred. No filler words (implements, with, functions for, as a, the, etc.). Good: "CombatScreen syncs combat state". Bad: "The CombatScreen class is responsible for synchronizing the combat state".
+
+The system has a 120-token energy budget per session — every word counts.
 
 ### What makes a valuable lesson
 
@@ -897,9 +903,6 @@ func runRemember(args []string) int {
 		fmt.Fprintln(os.Stderr, "heb: consolidate: project required")
 		return 1
 	}
-
-	// Hippocampal replay: chunk verbose lessons into terse atoms via cheap LLM.
-	lr.Lessons = chunkLessons(lr.Lessons)
 
 	result := consolidate.Run(lr, cfg)
 	if err := applyPayload(&result, &lr, &cfg); err != nil {
