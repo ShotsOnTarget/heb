@@ -10,15 +10,44 @@ func TestTokenize(t *testing.T) {
 		input string
 		want  []string
 	}{
+		// Basic
 		{"hello world", []string{"hello", "world"}},
-		{"heb_cli invoke_as bare_heb", []string{"heb", "cli", "invoke", "as", "bare", "heb"}},
-		{"internal/retrieve/", []string{"internal", "retrieve"}},
-		{"BM25_IDF_memory", []string{"bm25", "idf", "memory"}},
-		{"subject·predicate·object", []string{"subject", "predicate", "object"}},
-		{"a-b.c/d_e", nil}, // all single chars after split → dropped
+		{"Hello WORLD", []string{"hello", "world"}},
 		{"", nil},
 		{"a b c", nil}, // all single chars
-		{"Hello WORLD", []string{"hello", "world"}}, // lowercased
+
+		// Delimiter splitting (any non-alphanumeric)
+		{"heb_cli invoke_as bare_heb", []string{"heb", "cli", "invoke", "as", "bare", "heb"}},
+		{"internal/retrieve/", []string{"internal", "retrieve"}},
+		{"subject·predicate·object", []string{"subject", "predicate", "object"}},
+		{"a-b.c/d_e", nil}, // all single chars after split
+
+		// Punctuation stripping
+		{"combat, state; rendering.", []string{"combat", "state", "rendering"}},
+		{"(foo) [bar] {baz}", []string{"foo", "bar", "baz"}},
+		{"it's a test", []string{"it", "test"}}, // apostrophe splits, single chars dropped
+
+		// CamelCase / PascalCase
+		{"CombatScreen", []string{"combat", "screen"}},
+		{"RunState", []string{"run", "state"}},
+		{"getHTTPResponse", []string{"get", "http", "response"}},
+		{"XMLParser", []string{"xml", "parser"}},
+		{"myURLHandler", []string{"my", "url", "handler"}},
+		{"PlayerController rewrite", []string{"player", "controller", "rewrite"}},
+
+		// Digit boundaries
+		{"vec3", []string{"vec"}},           // "3" is single char, dropped
+		{"int32", []string{"int", "32"}},
+		{"player2controller", []string{"player", "controller"}}, // "2" dropped
+		{"BM25_IDF_memory", []string{"bm", "25", "idf", "memory"}},
+
+		// Mixed real-world identifiers
+		{"forEach", []string{"for", "each"}},
+		{"useState", []string{"use", "state"}},
+		{"__init__", []string{"init"}},
+		{"$scope.apply()", []string{"scope", "apply"}},
+		{"@dataclass", []string{"dataclass"}},
+		{"std::vector<int>", []string{"std", "vector", "int"}},
 	}
 	for _, tt := range tests {
 		got := Tokenize(tt.input)

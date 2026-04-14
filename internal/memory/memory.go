@@ -53,19 +53,25 @@ type Scored struct {
 // Tokenize breaks a body into matchable word tokens. This is the ONE
 // tokenizer used by both BM25 recall and edge co-activation.
 //
-// Splits on: space, underscore, hyphen, dot, slash, middle-dot (·).
-// Lowercases everything. Drops single-character tokens as noise.
+// Splits on: camelCase boundaries, digit/letter transitions, and any
+// non-alphanumeric character. Lowercases everything. Drops single-
+// character tokens as noise.
 func Tokenize(s string) []string {
+	// Split camelCase and digit/letter boundaries before lowercasing.
+	s = splitIdentifier(s)
 	s = strings.ToLower(s)
-	s = strings.NewReplacer(
-		"_", " ",
-		"\u00b7", " ",
-		".", " ",
-		"/", " ",
-		"-", " ",
-	).Replace(s)
+	// Replace any non-alphanumeric char with space.
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if isAlphaNum(r) {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte(' ')
+		}
+	}
 	var out []string
-	for _, w := range strings.Fields(s) {
+	for _, w := range strings.Fields(b.String()) {
 		if len(w) > 1 {
 			out = append(out, w)
 		}
@@ -75,6 +81,45 @@ func Tokenize(s string) []string {
 	}
 	return out
 }
+
+// splitIdentifier inserts spaces at word boundaries within code identifiers:
+// camelCase, PascalCase, digit↔letter transitions.
+//
+//	"CombatScreen"      → "Combat Screen"
+//	"getHTTPResponse"   → "get HTTP Response"
+//	"vec3"              → "vec 3"
+//	"player2controller" → "player 2 controller"
+//	"int32"             → "int 32"
+func splitIdentifier(s string) string {
+	var b strings.Builder
+	b.Grow(len(s) + 8)
+	runes := []rune(s)
+	for i, r := range runes {
+		if i > 0 {
+			prev := runes[i-1]
+			// Letter case boundaries (camelCase).
+			if isUpper(r) && isLower(prev) {
+				b.WriteByte(' ')
+			} else if isUpper(r) && isUpper(prev) && i+1 < len(runes) && isLower(runes[i+1]) {
+				b.WriteByte(' ')
+			}
+			// Digit ↔ letter transitions.
+			if isLetter(r) && isDigit(prev) {
+				b.WriteByte(' ')
+			} else if isDigit(r) && isLetter(prev) {
+				b.WriteByte(' ')
+			}
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+func isUpper(r rune) bool   { return r >= 'A' && r <= 'Z' }
+func isLower(r rune) bool   { return r >= 'a' && r <= 'z' }
+func isLetter(r rune) bool  { return isUpper(r) || isLower(r) }
+func isDigit(r rune) bool   { return r >= '0' && r <= '9' }
+func isAlphaNum(r rune) bool { return isLetter(r) || isDigit(r) }
 
 // TokenCount returns the number of matchable tokens in a body.
 func TokenCount(s string) int {
