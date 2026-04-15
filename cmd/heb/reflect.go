@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/steelboltgames/heb/internal/retrieve"
 	"github.com/steelboltgames/heb/internal/store"
@@ -22,12 +23,18 @@ const reflectSystemPrompt = `You are a memory reconciliation engine. Given a dev
 
 You will receive:
 1. The original prompt
-2. Retrieved memory tuples with weights
+2. Retrieved memory tuples with weights and age (days since last reinforced)
 3. Retrieved git refs and beads refs
 
 ## Reconciliation
 
-For each memory, classify as:
+### Step 1: Memory-vs-memory conflicts
+
+Before comparing memories to the prompt, check whether any retrieved memories contradict **each other**. When two memories cover the same topic with different values, the more recent one (lower age) supersedes the older. Flag the older memory as conflict_type "superseded" — Execute should ignore it and trust the newer one.
+
+### Step 2: Memory-vs-prompt conflicts
+
+For each non-superseded memory, classify as:
 
 **CONFIRMS** (default) — prompt is consistent with memory, or memory is irrelevant to the prompt.
 
@@ -36,9 +43,10 @@ For each memory, classify as:
 **CONFLICTS** — prompt contradicts the memory:
 - explicit_update: prompt directly states a different value (confidence 0.85)
 - implicit_update: applying the memory would make the task wrong (confidence 0.75)
+- superseded: an older memory was replaced by a newer memory on the same topic (confidence 0.90)
 Drop conflicts below confidence 0.50.
 
-The prompt always wins over memory.
+The prompt always wins over memory. Between memories, newer wins over older.
 
 If no memories were retrieved, status is "confirms" with notes "cold start — nothing to reconcile against".
 
@@ -63,8 +71,9 @@ Cold start: low confidence, cold_start: true, overall below 0.30. Do not fabrica
     {
       "existing_tuple":  "...",
       "existing_weight": 0.0,
-      "conflict_type":   "explicit_update | implicit_update",
+      "conflict_type":   "explicit_update | implicit_update | superseded",
       "new_value":       "...",
+      "superseded_by":   "...(tuple of the newer memory, if superseded)...",
       "confidence":      0.0,
       "action":          "create_successor"
     }
@@ -105,13 +114,31 @@ func doReflect(sense *senseResult, ret *retrieve.Result) (*reflectResult, string
 	var userPrompt strings.Builder
 	fmt.Fprintf(&userPrompt, "## Original prompt\n\n%s\n\n", sense.Raw)
 
+	now := time.Now().Unix()
 	fmt.Fprintf(&userPrompt, "## Retrieved memories (%d)\n\n", len(ret.Memories))
 	if len(ret.Memories) == 0 {
 		userPrompt.WriteString("(none — cold start)\n\n")
 	} else {
 		for _, m := range ret.Memories {
-			fmt.Fprintf(&userPrompt, "- %s (weight: %.2f, source: %s)\n",
-				m.TupleString(), m.Weight, m.Source)
+			age := int((now - m.UpdatedAt) / 86400)
+			if age < 0 {
+				age = 0
+			}
+			fmt.Fprintf(&userPrompt, "- %s (weight: %.2f, source: %s, age: %dd)\n",
+				m.TupleString(), m.Weight, m.Source, age)
+		}
+		userPrompt.WriteString("\n")
+	}
+
+	// Pre-compute pairwise similarity hints so the LLM confirms rather than discovers
+	similarPairs := retrieve.FindSimilarPairs(ret.Memories, 0.70)
+	if len(similarPairs) > 0 {
+		fmt.Fprintf(&userPrompt, "## Supersession hints (high token overlap, different bodies)\n\n")
+		for _, p := range similarPairs {
+			olderAge := int((now - p.Older.UpdatedAt) / 86400)
+			newerAge := int((now - p.Newer.UpdatedAt) / 86400)
+			fmt.Fprintf(&userPrompt, "- CANDIDATE: %q (%dd) may be superseded by %q (%dd) — jaccard=%.2f\n",
+				p.Older.Body, olderAge, p.Newer.Body, newerAge, p.Jaccard)
 		}
 		userPrompt.WriteString("\n")
 	}
@@ -143,9 +170,9 @@ func doReflect(sense *senseResult, ret *retrieve.Result) (*reflectResult, string
 	provider, apiKey := resolveProvider()
 	switch provider {
 	case "anthropic":
-		raw, err = senseViaAnthropic(apiKey, systemPrompt, userPrompt.String())
+		raw, err = senseViaAnthropic(apiKey, systemPrompt, userPrompt.String(), 2048)
 	case "openai":
-		raw, err = senseViaOpenAI(apiKey, systemPrompt, userPrompt.String())
+		raw, err = senseViaOpenAI(apiKey, systemPrompt, userPrompt.String(), 2048)
 	default:
 		cwd, _ := os.Getwd()
 		raw, err = senseViaClaude(cwd, systemPrompt, userPrompt.String())

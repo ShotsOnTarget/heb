@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/steelboltgames/heb/internal/retrieve"
 	"github.com/steelboltgames/heb/internal/store"
 )
 
@@ -41,8 +42,14 @@ func runPipeline(args []string) int {
 		return 1
 	}
 
+	// Filter superseded memories before Execute sees them
+	filtered := retrieve.FilterSuperseded(ret.Memories, reflectJSON)
+	if removed := len(ret.Memories) - len(filtered); removed > 0 {
+		fmt.Fprintf(os.Stderr, "filtered %d superseded memories\n", removed)
+	}
+
 	// Hand off to claude for execution
-	result, err := executeViaClaude(sense.Raw, reflectJSON)
+	result, err := executeViaClaude(sense.Raw, reflectJSON, filtered)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "heb: %v\n", err)
 		return 1
@@ -130,10 +137,14 @@ func resolveProvider() (string, string) {
 }
 
 // senseViaAnthropic calls the Anthropic Messages API directly with Haiku.
-func senseViaAnthropic(apiKey, systemPrompt, userPrompt string) (string, error) {
+// maxTokens of 0 uses the default (512).
+func senseViaAnthropic(apiKey, systemPrompt, userPrompt string, maxTokens int) (string, error) {
+	if maxTokens <= 0 {
+		maxTokens = 512
+	}
 	reqBody := map[string]any{
 		"model":      "claude-haiku-4-5-20251001",
-		"max_tokens": 512,
+		"max_tokens": maxTokens,
 		"system":     systemPrompt,
 		"messages": []map[string]string{
 			{"role": "user", "content": userPrompt},
@@ -184,10 +195,14 @@ func senseViaAnthropic(apiKey, systemPrompt, userPrompt string) (string, error) 
 }
 
 // senseViaOpenAI calls the OpenAI Chat Completions API with gpt-4.1-mini.
-func senseViaOpenAI(apiKey, systemPrompt, userPrompt string) (string, error) {
+// maxTokens of 0 uses the default (1024).
+func senseViaOpenAI(apiKey, systemPrompt, userPrompt string, maxTokens int) (string, error) {
+	if maxTokens <= 0 {
+		maxTokens = 1024
+	}
 	reqBody := map[string]any{
 		"model":       "gpt-4.1-mini",
-		"max_tokens":  1024,
+		"max_tokens":  maxTokens,
 		"temperature": 0,
 		"messages": []map[string]string{
 			{"role": "system", "content": systemPrompt},
@@ -256,8 +271,23 @@ Do not ask about things you can determine by reading the codebase. Only ask abou
 
 // executeViaClaude hands the user's prompt to claude --print --output-format stream-json
 // and captures the session ID, transcript, result, and file operations.
-func executeViaClaude(userPrompt, reflectJSON string) (*executeResult, error) {
-	combined := fmt.Sprintf("%s\n\n## Memory context\n\n%s", userPrompt, reflectJSON)
+// If filteredMemories is provided, they are included as the trusted memory
+// list (superseded memories already removed by FilterSuperseded).
+func executeViaClaude(userPrompt, reflectJSON string, filteredMemories []store.Scored) (*executeResult, error) {
+	var memSection strings.Builder
+	if len(filteredMemories) > 0 {
+		memSection.WriteString("## Active memories (superseded entries removed)\n\n")
+		now := time.Now().Unix()
+		for _, m := range filteredMemories {
+			age := int((now - m.UpdatedAt) / 86400)
+			if age < 0 {
+				age = 0
+			}
+			fmt.Fprintf(&memSection, "- %s (weight: %.2f, %dd ago)\n", m.TupleString(), m.Weight, age)
+		}
+		memSection.WriteString("\n")
+	}
+	combined := fmt.Sprintf("%s\n\n%s## Reflect analysis\n\n%s", userPrompt, memSection.String(), reflectJSON)
 	return runClaudePrint([]string{"--print", "--verbose", "--output-format", "stream-json", "--system-prompt", executeSystemPrompt, "--allowedTools", "Read,Write,Edit,Grep,Glob,Bash"}, combined)
 }
 

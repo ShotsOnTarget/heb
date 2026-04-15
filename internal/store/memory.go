@@ -58,7 +58,7 @@ func MemoryIDLegacy(subject, predicate, object string) string {
 // "created". If the memory already exists, deltaReinforce is applied
 // and the passed kind is used as-is. Callers that want a single delta
 // regardless of existence can pass the same value for both.
-func ApplyMemoryEvent(tx *sql.Tx, body, kind, reason, sessionID, beadID, topicTokens string, deltaNew, deltaReinforce float64) (id string, newWeight float64, wasNew bool, err error) {
+func ApplyMemoryEvent(tx *sql.Tx, body, kind, reason, sessionID, beadID, topicTokens, commitHash string, deltaNew, deltaReinforce float64) (id string, newWeight float64, wasNew bool, err error) {
 	id = memory.ID(body)
 	now := time.Now().UTC().Unix()
 
@@ -104,9 +104,9 @@ func ApplyMemoryEvent(tx *sql.Tx, body, kind, reason, sessionID, beadID, topicTo
 	}
 
 	_, err = tx.Exec(`
-		INSERT INTO events(memory_id, kind, delta, reason, session_id, bead_id, created_at)
-		VALUES(?, ?, ?, ?, ?, ?, ?)
-	`, id, eventKind, delta, nullIfEmpty(reason), nullIfEmpty(sessionID), nullIfEmpty(beadID), now)
+		INSERT INTO events(memory_id, kind, delta, reason, session_id, bead_id, commit_hash, created_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+	`, id, eventKind, delta, nullIfEmpty(reason), nullIfEmpty(sessionID), nullIfEmpty(beadID), nullIfEmpty(commitHash), now)
 	if err != nil {
 		return "", 0, false, fmt.Errorf("append event: %w", err)
 	}
@@ -214,6 +214,7 @@ const (
 	bm25K1 = 1.2  // term frequency saturation
 	bm25B  = 0.75 // document length normalization
 )
+
 
 // attentionMinGap is the minimum score ratio between consecutive results
 // that counts as a "significant drop." The attention filter cuts at the

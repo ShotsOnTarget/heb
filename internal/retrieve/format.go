@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/steelboltgames/heb/internal/store"
 )
@@ -22,12 +23,17 @@ func RenderHuman(r *Result) string {
 	if len(r.Memories) == 0 {
 		b.WriteString("  no matches\n")
 	}
+	now := time.Now().Unix()
 	for _, m := range r.Memories {
 		tag := "match"
 		if m.Source == "edge" {
 			tag = "edge "
 		}
-		fmt.Fprintf(&b, "  [%s %.2f] %s +%.2f\n", tag, m.Score, m.Body, m.Weight)
+		age := int((now - m.UpdatedAt) / 86400)
+		if age < 0 {
+			age = 0
+		}
+		fmt.Fprintf(&b, "  [%s %.2f] %s +%.2f (%dd ago)\n", tag, m.Score, m.Body, m.Weight, age)
 	}
 	b.WriteString("\n")
 
@@ -58,6 +64,7 @@ type RecallMemory struct {
 	Weight    float64 `json:"weight"`
 	Source    string  `json:"source"`
 	Relevance float64 `json:"relevance"`
+	AgeDays   int     `json:"age_days"`
 }
 
 // RecallResult is the contract:recall>reflect JSON output shape.
@@ -88,12 +95,18 @@ func RenderJSON(r *Result) string {
 	if out.Beads == nil {
 		out.Beads = []BeadRef{}
 	}
+	now := time.Now().Unix()
 	for _, m := range r.Memories {
+		age := int((now - m.UpdatedAt) / 86400)
+		if age < 0 {
+			age = 0
+		}
 		out.Memories = append(out.Memories, RecallMemory{
 			Tuple:     m.TupleString(),
 			Weight:    m.Weight,
 			Source:    m.Source,
 			Relevance: m.Score,
+			AgeDays:   age,
 		})
 	}
 	buf, _ := json.MarshalIndent(out, "", "  ")
