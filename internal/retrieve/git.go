@@ -3,7 +3,10 @@ package retrieve
 import (
 	"bytes"
 	"sort"
+	"strconv"
 	"strings"
+
+	"github.com/steelboltgames/heb/internal/memory"
 )
 
 // GitRef is a single git log entry surfaced by the recall pipeline.
@@ -15,21 +18,61 @@ type GitRef struct {
 
 // gitPass executes the full git log retrieval cascade for the given
 // contract:sense>recall tokens and returns up to cfg.GitCap deduplicated refs
-// across all tokens. Tokens are IDF-sorted (rarest first by file grep count)
-// so specific tokens like "jettison" get processed before generic ones like
-// "feature" that would otherwise exhaust the cap with noise.
+// ranked by BM25 relevance against ALL query tokens.
+//
+// Pipeline:
+//  1. Gather candidates via IDF-sorted literal/decomposed lookups (existing)
+//  2. BM25-rank commit messages against the full token set
+//  3. Drop zero-score commits (no query token in message)
+//  4. Return top GitCap results
 func gitPass(tokens []string, runner Runner, cfg Config) []GitRef {
 	if cfg.NoExternal {
 		return nil
 	}
 
+	// Phase 1: gather candidate commits (existing pipeline).
+	candidates := gitCandidates(tokens, runner, cfg)
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	// Phase 2: BM25-rank commit messages against all query tokens.
+	docs := make([]memory.Doc, len(candidates))
+	for i, ref := range candidates {
+		docs[i] = memory.Doc{
+			Words:   memory.Tokenize(ref.Message),
+			AgeDays: parseAgeDays(ref.Age),
+		}
+	}
+
+	ranked := memory.BM25Rank(docs, tokens)
+
+	out := make([]GitRef, 0, len(ranked))
+	for _, r := range ranked {
+		out = append(out, candidates[r.Index])
+		if len(out) >= cfg.GitCap {
+			break
+		}
+	}
+	return out
+}
+
+// gitCandidates gathers deduplicated candidate refs across all tokens
+// using IDF-sorted literal/decomposed lookups. No ranking — just collection.
+func gitCandidates(tokens []string, runner Runner, cfg Config) []GitRef {
 	sorted := idfSort(tokens, runner, cfg)
+
+	// Gather more candidates than GitCap to give BM25 a richer pool.
+	candidateCap := cfg.GitCap * 3
+	if candidateCap < 30 {
+		candidateCap = 30
+	}
 
 	var all []GitRef
 	seen := make(map[string]bool)
 
 	for _, token := range sorted {
-		if len(all) >= cfg.GitCap {
+		if len(all) >= candidateCap {
 			break
 		}
 		refs := lookupLiteral(token, runner, cfg)
@@ -42,12 +85,51 @@ func gitPass(tokens []string, runner Runner, cfg Config) []GitRef {
 			}
 			seen[r.Hash] = true
 			all = append(all, r)
-			if len(all) >= cfg.GitCap {
+			if len(all) >= candidateCap {
 				break
 			}
 		}
 	}
 	return all
+}
+
+// parseAgeDays converts a git relative date string like "2 days ago",
+// "3 weeks ago", "1 year, 2 months ago" into approximate days.
+// Returns 0 for unparseable strings (treats as brand new).
+func parseAgeDays(age string) float64 {
+	age = strings.TrimSpace(age)
+	// Split on commas to handle "1 year, 2 months ago".
+	parts := strings.Split(age, ",")
+	var totalDays float64
+	for _, part := range parts {
+		fields := strings.Fields(strings.TrimSpace(part))
+		// Expect: "<number> <unit> [ago]"
+		if len(fields) < 2 {
+			continue
+		}
+		n, err := strconv.ParseFloat(fields[0], 64)
+		if err != nil {
+			continue
+		}
+		unit := strings.TrimSuffix(fields[1], "s") // "days" → "day"
+		switch unit {
+		case "second", "sec":
+			totalDays += n / 86400
+		case "minute", "min":
+			totalDays += n / 1440
+		case "hour":
+			totalDays += n / 24
+		case "day":
+			totalDays += n
+		case "week":
+			totalDays += n * 7
+		case "month":
+			totalDays += n * 30
+		case "year":
+			totalDays += n * 365
+		}
+	}
+	return totalDays
 }
 
 // idfSort reorders tokens by file grep frequency (ascending). Tokens that

@@ -84,9 +84,9 @@ func doSense(prompt string) (*senseResult, string, error) {
 	provider, apiKey := resolveProvider()
 	switch provider {
 	case "anthropic":
-		raw, err = senseViaAnthropic(apiKey, systemPrompt, prompt)
+		raw, err = senseViaAnthropic(apiKey, systemPrompt, prompt, 0)
 	case "openai":
-		raw, err = senseViaOpenAI(apiKey, systemPrompt, prompt)
+		raw, err = senseViaOpenAI(apiKey, systemPrompt, prompt, 0)
 	default:
 		raw, err = senseViaClaude(cwd, systemPrompt, prompt)
 	}

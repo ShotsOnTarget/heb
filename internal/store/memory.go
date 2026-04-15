@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
-	"math"
 	"sort"
 	"strings"
 	"time"
@@ -209,11 +208,8 @@ func DecayEdge(tx *sql.Tx, aID, bID string, delta float64) error {
 // RecallLimit is the hard cap on memories returned by Recall.
 const RecallLimit = 16
 
-// BM25 tuning constants.
-const (
-	bm25K1 = 1.2  // term frequency saturation
-	bm25B  = 0.75 // document length normalization
-)
+// BM25 scoring is delegated to memory.BM25Rank. Constants live in
+// the memory package: BM25K1, BM25B, RecencyHalfLifeDays, RecencyInfluence.
 
 
 // attentionMinGap is the minimum score ratio between consecutive results
@@ -228,11 +224,13 @@ const attentionMinKeep = 2
 // Recall ranks memories against a token set using BM25 scoring and
 // an attention filter that drops low-relevance tail results.
 //
-// BM25 scoring:
+// BM25 scoring (delegated to memory.BM25Rank):
 //   - IDF: ln((N - df + 0.5) / (df + 0.5) + 1)  — rare tokens dominate
 //   - TF saturation: tf*(k1+1) / (tf + k1*(1-b+b*dl/avgdl))
-//   - Combined: bm25_relevance × (0.7 + 0.3 × weight)
+//   - Combined: bm25_relevance × (0.7 + 0.3 × weight) × (0.85 + 0.15 × recency)
 //     Weight is a mild tiebreaker (±30%), not the dominant signal.
+//   - Recency: 1/(1 + ageDays/30) — uses UpdatedAt so reinforced memories
+//     stay fresh. ±15% influence; breaks ties toward recent memories.
 //
 // Attention filter: scans ranked results for gaps where score[i-1]/score[i]
 // >= attentionMinGap. Cuts at the last such gap. Returns at least
@@ -251,77 +249,35 @@ func Recall(db *sql.DB, tokens []string, limit int) ([]Scored, error) {
 	}
 	defer rows.Close()
 
-	// First pass: load ALL active memories, split into words, count doc frequency.
-	// N and avgDL must cover the full corpus for correct BM25 IDF, not just matches.
-	type candidate struct {
-		mem   Memory
-		words []string
-		hits  []int // indices into tokens that matched
-	}
-	var all []candidate
-	var corpusSize int    // total active memories (including non-matching)
-	var corpusWords int   // total words across all active memories
-	docFreq := make([]int, len(tokens))
+	// Load ALL active memories into Doc slice for BM25Rank.
+	now := float64(time.Now().Unix())
+	var mems []Memory
+	var docs []memory.Doc
 
 	for rows.Next() {
 		var m Memory
 		if err := rows.Scan(&m.ID, &m.Body, &m.Weight, &m.Status, &m.TopicTokens, &m.CreatedAt, &m.UpdatedAt); err != nil {
 			return nil, err
 		}
-		words := memory.Tokenize(m.Body)
-		corpusSize++
-		corpusWords += len(words)
-		var hits []int
-		for i, t := range tokens {
-			tt := strings.ToLower(strings.TrimSpace(t))
-			if tt != "" && memory.MatchesWord(words, tt) {
-				hits = append(hits, i)
-				docFreq[i]++
-			}
+		ageDays := (now - float64(m.UpdatedAt)) / 86400
+		if ageDays < 0 {
+			ageDays = 0
 		}
-		if len(hits) == 0 && len(tokens) > 0 {
-			continue
-		}
-		all = append(all, candidate{mem: m, words: words, hits: hits})
+		mems = append(mems, m)
+		docs = append(docs, memory.Doc{
+			Words:   memory.Tokenize(m.Body),
+			Weight:  m.Weight,
+			AgeDays: ageDays,
+		})
 	}
 
-	N := float64(corpusSize)
-	if N == 0 {
-		N = 1
+	// BM25 + weight + recency scoring via shared scorer.
+	ranked := memory.BM25Rank(docs, tokens)
+
+	scored := make([]Scored, 0, len(ranked))
+	for _, r := range ranked {
+		scored = append(scored, Scored{Memory: mems[r.Index], Score: r.Score, Source: "match"})
 	}
-
-	// Average document length across full corpus.
-	avgDL := float64(corpusWords) / N
-
-	// BM25 IDF per token.
-	idf := make([]float64, len(tokens))
-	for i, df := range docFreq {
-		n := float64(df)
-		idf[i] = math.Log((N - n + 0.5) / (n + 0.5) + 1)
-	}
-
-	// Second pass: BM25 score each candidate.
-	scored := make([]Scored, 0, len(all))
-	for _, c := range all {
-		dl := float64(len(c.words))
-		var bm25 float64
-		for _, idx := range c.hits {
-			tt := strings.ToLower(strings.TrimSpace(tokens[idx]))
-			tf := 0
-			for _, w := range c.words {
-				if w == tt {
-					tf++
-				}
-			}
-			tfComp := (float64(tf) * (bm25K1 + 1)) / (float64(tf) + bm25K1*(1-bm25B+bm25B*dl/avgDL))
-			bm25 += idf[idx] * tfComp
-		}
-		// Weight as mild tiebreaker: ±30% influence, not dominant.
-		score := bm25 * (0.7 + 0.3*c.mem.Weight)
-		scored = append(scored, Scored{Memory: c.mem, Score: score, Source: "match"})
-	}
-
-	sort.Slice(scored, func(i, j int) bool { return scored[i].Score > scored[j].Score })
 
 	// Attention filter: cut at the last significant gap.
 	scored = attentionFilter(scored, limit)
