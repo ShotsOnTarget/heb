@@ -1,0 +1,580 @@
+:root {
+  /* Palette: sand / cream / sage / navy */
+  --sand: #cec5b4;
+  --cream: #e8e3d8;
+  --sage: #7baa8e;
+  --navy: #2b2d54;
+
+  --bg-primary: var(--cream);
+  --bg-secondary: var(--sand);
+  --bg-tertiary: #b8b0a0;
+  --bg-input: #f0ece4;
+  --text-primary: var(--navy);
+  --text-secondary: #4a4c6a;
+  --text-muted: #8a8878;
+  --accent: var(--sage);
+  --accent-hover: #5e9474;
+  --active-green: var(--sage);
+  --complete-blue: var(--navy);
+  --border: #b8b0a0;
+  --msg-user: rgba(123, 170, 142, 0.15);
+  --msg-assistant: rgba(43, 45, 84, 0.08);
+  --msg-system: rgba(206, 197, 180, 0.5);
+  --scrollbar-thumb: #a8a090;
+  --scrollbar-track: transparent;
+}
+
+.app {
+  display: flex;
+  height: 100vh;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+/* ── Sidebar ── */
+.sidebar {
+  width: 280px;
+  min-width: 280px;
+  background: var(--bg-secondary);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.sidebar-header {
+  padding: 16px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  -webkit-app-region: drag;
+}
+
+.sidebar-header h1 {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--navy);
+}
+
+.sidebar-actions {
+  display: flex;
+  gap: 8px;
+  -webkit-app-region: no-drag;
+}
+
+.sidebar-actions button {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: all 0.15s;
+}
+
+.sidebar-actions button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.session-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.session-item {
+  padding: 10px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  margin-bottom: 4px;
+  transition: background 0.15s;
+  border-left: 3px solid transparent;
+}
+
+.session-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.session-item.selected {
+  background: rgba(43, 45, 84, 0.1);
+  border-left-color: var(--navy);
+}
+
+.session-item.active {
+  border-left-color: var(--active-green);
+}
+
+.session-item.processing {
+  border-left-color: #c49a5c;
+  animation: pulse-border 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-border {
+  0%, 100% { border-left-color: #c49a5c; }
+  50% { border-left-color: #e0b97a; }
+}
+
+.session-item.complete {
+  border-left-color: var(--complete-blue);
+  opacity: 0.7;
+}
+
+.session-item.complete:hover {
+  opacity: 1;
+}
+
+.session-item.trashed {
+  border-left-color: #b08080;
+  opacity: 0.4;
+  text-decoration: line-through;
+}
+
+.session-item.trashed:hover {
+  opacity: 0.6;
+}
+
+.session-id {
+  font-size: 12px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+}
+
+.session-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.session-project {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.session-status {
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 600;
+}
+
+.session-status.active {
+  background: rgba(123, 170, 142, 0.2);
+  color: #5a9470;
+}
+
+.session-status.complete {
+  background: rgba(43, 45, 84, 0.12);
+  color: var(--navy);
+}
+
+.session-steps {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
+/* ── Main Content ── */
+.main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.main-header {
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  -webkit-app-region: drag;
+}
+
+.main-header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.main-header h2 {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.main-header-actions {
+  display: flex;
+  gap: 8px;
+  -webkit-app-region: no-drag;
+}
+
+.btn {
+  padding: 6px 14px;
+  border-radius: 4px;
+  border: none;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  transition: all 0.15s;
+}
+
+.btn-primary {
+  background: var(--navy);
+  color: var(--cream);
+}
+
+.btn-primary:hover {
+  background: #3a3d6a;
+}
+
+.btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-secondary {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+}
+
+.btn-secondary:hover {
+  border-color: var(--text-secondary);
+  color: var(--text-primary);
+}
+
+.btn-danger {
+  background: transparent;
+  border: 1px solid #b08080;
+  color: #b08080;
+}
+
+.btn-danger:hover {
+  background: rgba(176, 128, 128, 0.15);
+  color: #c06060;
+  border-color: #c06060;
+}
+
+.btn-success {
+  background: var(--sage);
+  color: white;
+}
+
+.btn-success:hover {
+  background: #5e9474;
+}
+
+/* ── Project Selector ── */
+.project-picker {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  -webkit-app-region: no-drag;
+}
+
+.project-add-btn {
+  padding: 4px 10px !important;
+  font-size: 12px !important;
+  white-space: nowrap;
+}
+
+.project-select {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  outline: none;
+  -webkit-app-region: no-drag;
+  transition: border-color 0.15s;
+}
+
+.project-select:focus {
+  border-color: var(--accent);
+}
+
+.project-select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.project-select option {
+  background: var(--bg-secondary);
+}
+
+/* ── Chat View ── */
+.chat-container {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.message {
+  padding: 12px 16px;
+  border-radius: 8px;
+  max-width: 85%;
+  line-height: 1.5;
+  font-size: 14px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.message.user {
+  background: var(--msg-user);
+  align-self: flex-end;
+  border-bottom-right-radius: 2px;
+}
+
+.message.assistant {
+  background: var(--msg-assistant);
+  align-self: flex-start;
+  border-bottom-left-radius: 2px;
+}
+
+.message.system {
+  background: var(--msg-system);
+  align-self: center;
+  font-size: 12px;
+  color: var(--text-secondary);
+  max-width: 90%;
+  text-align: center;
+}
+
+.message-role {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+  font-weight: 600;
+}
+
+.message code {
+  background: rgba(255, 255, 255, 0.08);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 13px;
+}
+
+.message pre {
+  background: rgba(0, 0, 0, 0.3);
+  padding: 10px;
+  border-radius: 4px;
+  overflow-x: auto;
+  margin: 8px 0;
+}
+
+.message pre code {
+  background: none;
+  padding: 0;
+}
+
+.empty-state {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  gap: 12px;
+}
+
+.empty-state h3 {
+  font-size: 20px;
+  font-weight: 300;
+  color: var(--text-secondary);
+}
+
+.empty-state p {
+  font-size: 14px;
+}
+
+/* ── Input Bar ── */
+.input-bar {
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.input-bar textarea {
+  flex: 1;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  padding: 10px 14px;
+  border-radius: 6px;
+  font-size: 14px;
+  font-family: inherit;
+  resize: none;
+  min-height: 42px;
+  max-height: 200px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.input-bar textarea:focus {
+  border-color: var(--accent);
+}
+
+.input-bar textarea::placeholder {
+  color: var(--text-muted);
+}
+
+/* ── Progress indicator ── */
+.progress-bar {
+  padding: 8px 20px;
+  background: rgba(43, 45, 84, 0.05);
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-muted);
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  white-space: pre-wrap;
+  max-height: 80px;
+  overflow-y: auto;
+}
+
+/* ── Config Panel ── */
+.config-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.config-panel {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  width: 500px;
+  max-height: 80vh;
+  overflow-y: auto;
+  padding: 24px;
+}
+
+.config-panel h2 {
+  font-size: 18px;
+  margin-bottom: 20px;
+  color: var(--navy);
+}
+
+.config-section {
+  margin-bottom: 20px;
+}
+
+.config-section h3 {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-muted);
+  margin-bottom: 10px;
+}
+
+.config-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.config-row label {
+  width: 120px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.config-row input,
+.config-row select {
+  flex: 1;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  padding: 8px 12px;
+  border-radius: 4px;
+  font-size: 13px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  outline: none;
+}
+
+.config-row input:focus,
+.config-row select:focus {
+  border-color: var(--accent);
+}
+
+.config-row select {
+  cursor: pointer;
+}
+
+.config-row select option {
+  background: var(--bg-secondary);
+}
+
+.config-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.config-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #4a4a6a;
+}
+
+/* ── Spinner ── */
+.spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--border);
+  border-top-color: var(--navy);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  margin-right: 8px;
+  vertical-align: middle;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
