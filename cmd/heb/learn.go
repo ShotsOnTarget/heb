@@ -217,12 +217,10 @@ Prediction reconciliation shape when present:
 
 // doLearn runs the learn step: gathers contracts + transcript from the DB,
 // calls an LLM to produce a contract:learn>consolidate JSON, and persists it.
+// When learn.model is "resume", it resumes the Claude Code session instead of
+// calling an external API — Claude already has full context from the work session.
 func doLearn(sessionID string) (string, error) {
-	root, err := store.RepoRoot()
-	if err != nil {
-		return "", fmt.Errorf("repo root: %w", err)
-	}
-	s, err := store.Open(root)
+	s, err := store.Open()
 	if err != nil {
 		return "", fmt.Errorf("open store: %w", err)
 	}
@@ -240,15 +238,52 @@ func doLearn(sessionID string) (string, error) {
 	reflectJSON, _ := store.ReadContract(s.DB(), sessionID, "reflect")
 	executeMetaJSON, _ := store.ReadContract(s.DB(), sessionID, "execute_meta")
 
+	// Pre-compute fields from recall + reflect + execute_meta contracts
+	// that the LLM would otherwise have to extract manually.
+	precomputed := precomputeFields(recallJSON, reflectJSON, executeMetaJSON)
+
+	timestampEnd := time.Now().UTC().Format("2006-01-02T15:04:05Z")
+	systemPrompt := strings.ReplaceAll(learnSystemPrompt, "<TIMESTAMP_END>", timestampEnd)
+
+	fmt.Fprintf(os.Stderr, "learning from session %s...\n", sessionID)
+
+	// Check if resume mode is configured
+	learnModel, _ := configLookup("learn.model", false)
+	var raw string
+
+	if learnModel == "resume" {
+		raw, err = doLearnViaResume(s, sessionID, systemPrompt, senseJSON, recallJSON, reflectJSON, precomputed)
+	} else {
+		raw, err = doLearnViaAPI(s, sessionID, systemPrompt, senseJSON, recallJSON, reflectJSON, precomputed)
+	}
+	if err != nil {
+		return "", err
+	}
+
+	raw = stripJSONFences(strings.TrimSpace(raw))
+
+	// Validate it's parseable JSON
+	var check map[string]any
+	if err := json.Unmarshal([]byte(raw), &check); err != nil {
+		return "", fmt.Errorf("invalid JSON from learn: %v\nraw: %s", err, raw)
+	}
+
+	// Persist learn contract
+	if err := store.WriteContract(s.DB(), sessionID, "learn", raw); err != nil {
+		fmt.Fprintf(os.Stderr, "heb: session write learn: %v\n", err)
+	}
+
+	return raw, nil
+}
+
+// doLearnViaAPI is the original learn path: gather transcript, send everything
+// to an external LLM API.
+func doLearnViaAPI(s *store.SQLiteStore, sessionID, systemPrompt, senseJSON, recallJSON, reflectJSON, precomputed string) (string, error) {
 	// Read transcript
 	responses, err := store.ListResponses(s.DB(), sessionID)
 	if err != nil {
 		return "", fmt.Errorf("read transcript: %w", err)
 	}
-
-	// Pre-compute fields from recall + reflect + execute_meta contracts
-	// that the LLM would otherwise have to extract manually.
-	precomputed := precomputeFields(recallJSON, reflectJSON, executeMetaJSON)
 
 	// Build user prompt with all context
 	var userPrompt strings.Builder
@@ -284,31 +319,216 @@ func doLearn(sessionID string) (string, error) {
 		}
 	}
 
-	timestampEnd := time.Now().UTC().Format("2006-01-02T15:04:05Z")
-	systemPrompt := strings.ReplaceAll(learnSystemPrompt, "<TIMESTAMP_END>", timestampEnd)
-
-	fmt.Fprintf(os.Stderr, "learning from session %s...\n", sessionID)
-
-	// Call LLM — learn uses its own model config
-	raw, err := callLearnLLM(root, systemPrompt, userPrompt.String())
+	raw, err := callLearnLLM("", systemPrompt, userPrompt.String())
 	if err != nil {
 		return "", fmt.Errorf("learn LLM: %w", err)
 	}
-
-	raw = stripJSONFences(strings.TrimSpace(raw))
-
-	// Validate it's parseable JSON
-	var check map[string]any
-	if err := json.Unmarshal([]byte(raw), &check); err != nil {
-		return "", fmt.Errorf("invalid JSON from learn: %v\nraw: %s", err, raw)
-	}
-
-	// Persist learn contract
-	if err := store.WriteContract(s.DB(), sessionID, "learn", raw); err != nil {
-		fmt.Fprintf(os.Stderr, "heb: session write learn: %v\n", err)
-	}
-
 	return raw, nil
+}
+
+// resumeLearnPrompt is a focused prompt for resume-mode learning.
+// Claude already has the full session in context — it only needs to produce
+// the judgment fields. Go backfills all the mechanical copy-paste fields after.
+const resumeLearnPrompt = `# Session Learning Task
+
+Review this conversation and produce a JSON object with your analysis. You already have full context — do NOT use any tools.
+
+Output ONLY the JSON object below — no markdown fences, no preamble.
+
+{
+  "implementation": {
+    "surprise_touches": [],
+    "approach":         "one sentence past tense — what you actually did",
+    "patterns_used":    []
+  },
+
+  "decisions": [
+    {
+      "question": "question you asked the developer",
+      "answer":   "what they answered",
+      "weight":   "high | medium | low"
+    }
+  ],
+
+  "corrections": [
+    {
+      "what":       "what you did wrong (past tense)",
+      "correction": "what the developer said instead",
+      "intensity":  0.5,
+      "impact":     "cosmetic | behavioral | architectural"
+    }
+  ],
+
+  "completed": true,
+
+  "lessons": [
+    {
+      "body":       "terse atom — max 12 words, noun-verb-noun preferred",
+      "scope":      "project | universal_candidate",
+      "confidence": 0.75,
+      "evidence":   "what in the session supports this",
+      "source":     "session | prediction"
+    }
+  ],
+
+  "prediction_reconciliation": null
+}
+
+## Lesson rules
+
+- Max 8 lessons, min 0. Only write lessons with confidence >= 0.50.
+- Each body MUST be <= 12 words. Verbose atoms are penalised.
+- Do NOT describe what code changed (git log captures that).
+- Write lessons that capture WHY, WHEN, or HOW — things code alone doesn't tell you.
+- Correction-derived lessons: cosmetic corrections rarely warrant lessons. Behavioral → 0.75-0.85. Architectural → 0.85-0.95.
+- Code anchor lessons (map identifier→purpose) do NOT count against the 8-lesson max. Cap at 4.
+- Only write lessons if: corrections exist, task incomplete, decisions exist, files touched > 0, or new non-obvious observations.
+
+## Correction rules
+
+- Only include corrections where the developer pushed back on your work.
+- intensity: 0.1-0.3 minor, 0.4-0.6 clear, 0.7-0.8 emphatic, 0.9-1.0 hard/caps/repetition.
+- Empty array if none.
+
+## Decision rules
+
+- Every question you asked AND the developer answered.
+- weight: "high" (design), "medium" (clarification), "low" (confirmation).
+- Empty array if you asked nothing.
+
+## Prediction reconciliation
+
+If you received a Reflect analysis with predictions at the start, reconcile each element:
+{
+  "cold_start": false,
+  "elements": [
+    {
+      "element":   "files | approach | outcome | risks",
+      "predicted": "what was predicted",
+      "actual":    "what actually happened",
+      "result":    "matched | partial | missed | wrong",
+      "lesson":    "correction text or null"
+    }
+  ],
+  "matched_count": 0,
+  "total_count":   0,
+  "overall":       "matched | partial | missed",
+  "summary":       "one-line summary"
+}
+Set to null if no prediction was provided or if this was a cold start.`
+
+// doLearnViaResume resumes the Claude Code session with a focused learn prompt.
+// Claude already has full conversation context — it only produces judgment fields
+// (lessons, corrections, decisions, approach). Go backfills all mechanical fields
+// (session_id, tokens, memory_loaded, files_touched, etc.) from the contracts.
+func doLearnViaResume(s *store.SQLiteStore, sessionID, _, senseJSON, _, _ string, precomputed string) (string, error) {
+	// Find the Claude session to resume
+	claudeSessionID, err := store.LatestClaudeSessionID(s.DB(), sessionID)
+	if err != nil {
+		return "", fmt.Errorf("no claude session to resume for %s (use learn.model=api or run a session first): %w", sessionID, err)
+	}
+
+	fmt.Fprintf(os.Stderr, "resuming claude session %s for learning...\n", claudeSessionID)
+
+	// Use claude --resume with --print and no tools allowed (pure JSON output)
+	result, err := runClaudePrint([]string{
+		"--print",
+		"--verbose",
+		"--output-format", "stream-json",
+		"--allowedTools", "",
+		"--resume", claudeSessionID,
+	}, resumeLearnPrompt)
+	if err != nil {
+		return "", fmt.Errorf("claude resume learn: %w", err)
+	}
+
+	// Backfill mechanical fields from contracts
+	return backfillLearnContract(result.ResultText, senseJSON, precomputed)
+}
+
+// backfillLearnContract merges Claude's judgment output with mechanical fields
+// extracted from the sense contract and pre-computed data.
+func backfillLearnContract(judgmentJSON, senseJSON, precomputed string) (string, error) {
+	judgmentJSON = stripJSONFences(strings.TrimSpace(judgmentJSON))
+
+	var judgment map[string]any
+	if err := json.Unmarshal([]byte(judgmentJSON), &judgment); err != nil {
+		return "", fmt.Errorf("invalid JSON from resume learn: %v\nraw: %s", err, judgmentJSON)
+	}
+
+	// Extract fields from sense contract
+	var sense struct {
+		SessionID string   `json:"session_id"`
+		Project   string   `json:"project"`
+		Raw       string   `json:"raw"`
+		Intent    string   `json:"intent"`
+		Tokens    []string `json:"tokens"`
+	}
+	json.Unmarshal([]byte(senseJSON), &sense)
+
+	// Extract fields from pre-computed
+	var pre struct {
+		MemoryLoaded     map[string]any `json:"memory_loaded"`
+		RecalledViaEdges []string       `json:"recalled_via_edges"`
+		FilesTouched     []string       `json:"files_touched"`
+		FilesRead        []string       `json:"files_read"`
+	}
+	json.Unmarshal([]byte(precomputed), &pre)
+
+	// Backfill top-level mechanical fields
+	judgment["session_id"] = sense.SessionID
+	judgment["project"] = sense.Project
+	judgment["raw_prompt"] = sense.Raw
+	judgment["intent"] = sense.Intent
+	judgment["tokens"] = sense.Tokens
+	judgment["timestamp_end"] = time.Now().UTC().Format("2006-01-02T15:04:05Z")
+
+	if _, ok := judgment["bead_id"]; !ok {
+		judgment["bead_id"] = nil
+	}
+
+	// Memory fields
+	if pre.MemoryLoaded != nil {
+		judgment["memory_loaded"] = pre.MemoryLoaded
+	}
+	if pre.RecalledViaEdges != nil {
+		judgment["recalled_via_edges"] = pre.RecalledViaEdges
+	} else {
+		judgment["recalled_via_edges"] = []string{}
+	}
+
+	// Backfill files into implementation if not already present
+	if impl, ok := judgment["implementation"].(map[string]any); ok {
+		if pre.FilesTouched != nil {
+			impl["files_touched"] = pre.FilesTouched
+		}
+		if pre.FilesRead != nil {
+			impl["files_read"] = pre.FilesRead
+		}
+	}
+
+	// Derive correction_count and peak_intensity from corrections array
+	if corrections, ok := judgment["corrections"].([]any); ok {
+		judgment["correction_count"] = len(corrections)
+		peak := 0.0
+		for _, c := range corrections {
+			if cm, ok := c.(map[string]any); ok {
+				if intensity, ok := cm["intensity"].(float64); ok && intensity > peak {
+					peak = intensity
+				}
+			}
+		}
+		judgment["peak_intensity"] = peak
+	} else {
+		judgment["correction_count"] = 0
+		judgment["peak_intensity"] = 0.0
+	}
+
+	out, err := json.MarshalIndent(judgment, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("marshal learn contract: %w", err)
+	}
+	return string(out), nil
 }
 
 // precomputeFields extracts fields from recall + reflect contracts so the
@@ -860,12 +1080,7 @@ func callLearnViaClaude(model, systemPrompt, userPrompt string) (string, error) 
 
 // runLearn is the `heb learn` entry point.
 func runLearn(args []string) int {
-	root, err := store.RepoRoot()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "heb: %v\n", err)
-		return 1
-	}
-	s, err := store.Open(root)
+	s, err := store.Open()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "heb: %v\n", err)
 		return 1
@@ -911,12 +1126,7 @@ func runRemember(args []string) int {
 	}
 	args = filtered
 
-	root, err := store.RepoRoot()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "heb: %v\n", err)
-		return 1
-	}
-	s, err := store.Open(root)
+	s, err := store.Open()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "heb: %v\n", err)
 		return 1
@@ -944,6 +1154,7 @@ func runRemember(args []string) int {
 
 	// Step 2: Git commit (before consolidation mutates .heb/)
 	if doCommit {
+		root, _ := store.RepoRoot()
 		if err := commitSessionWork(root, learnJSON, 0); err != nil {
 			fmt.Fprintf(os.Stderr, "heb: commit: %v\n", err)
 			// Non-fatal — continue with consolidation
