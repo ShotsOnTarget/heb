@@ -17,7 +17,8 @@ func RenderHuman(r *Result) string {
 	b.WriteString("───────────────────────────────\n")
 	fmt.Fprintf(&b, "session_id:  %s\n", r.SessionID)
 	fmt.Fprintf(&b, "project:     %s\n", r.Project)
-	fmt.Fprintf(&b, "budget used: %d / %d tokens\n\n", r.TokensUsed, r.TokenBudget)
+	fmt.Fprintf(&b, "memory budget: %d / %d tokens\n", r.TokensUsed, r.TokenBudget)
+	fmt.Fprintf(&b, "git budget:    %d / %d tokens\n\n", r.GitTokensUsed, r.GitTokenBudget)
 
 	fmt.Fprintf(&b, "MEMORIES (%d entries)\n", len(r.Memories))
 	if len(r.Memories) == 0 {
@@ -42,7 +43,7 @@ func RenderHuman(r *Result) string {
 		b.WriteString("  no matches\n")
 	}
 	for _, g := range r.GitRefs {
-		fmt.Fprintf(&b, "  %s  %s\n", g.Hash, g.Message)
+		fmt.Fprintf(&b, "  [%.2f] %s  %s (%dd ago)\n", g.Score, g.Hash, g.Message, int(g.AgeDays))
 	}
 	b.WriteString("\n")
 
@@ -69,25 +70,29 @@ type RecallMemory struct {
 
 // RecallResult is the contract:recall>reflect JSON output shape.
 type RecallResult struct {
-	SessionID   string            `json:"session_id"`
-	Project     string            `json:"project"`
-	TokenBudget int               `json:"token_budget"`
-	TokensUsed  int               `json:"tokens_used"`
-	Memories    []RecallMemory `json:"memories"`
-	GitRefs     []GitRef          `json:"git_refs"`
-	Beads       []BeadRef         `json:"beads"`
+	SessionID      string         `json:"session_id"`
+	Project        string         `json:"project"`
+	TokenBudget    int            `json:"token_budget"`
+	TokensUsed     int            `json:"tokens_used"`
+	GitTokenBudget int            `json:"git_token_budget"`
+	GitTokensUsed  int            `json:"git_tokens_used"`
+	Memories       []RecallMemory `json:"memories"`
+	GitRefs        []GitRef       `json:"git_refs"`
+	Beads          []BeadRef      `json:"beads"`
 }
 
 // RenderJSON renders Block 2 — the contract:recall>reflect JSON, indented.
 func RenderJSON(r *Result) string {
 	out := RecallResult{
-		SessionID:   r.SessionID,
-		Project:     r.Project,
-		TokenBudget: r.TokenBudget,
-		TokensUsed:  r.TokensUsed,
-		Memories:    make([]RecallMemory, 0, len(r.Memories)),
-		GitRefs:     r.GitRefs,
-		Beads:       r.Beads,
+		SessionID:      r.SessionID,
+		Project:        r.Project,
+		TokenBudget:    r.TokenBudget,
+		TokensUsed:     r.TokensUsed,
+		GitTokenBudget: r.GitTokenBudget,
+		GitTokensUsed:  r.GitTokensUsed,
+		Memories:       make([]RecallMemory, 0, len(r.Memories)),
+		GitRefs:        r.GitRefs,
+		Beads:          r.Beads,
 	}
 	if out.GitRefs == nil {
 		out.GitRefs = []GitRef{}

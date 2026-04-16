@@ -24,12 +24,13 @@ func Run(in Input, memories []store.Scored, runner Runner, cfg Config) *Result {
 	beadRefs := beadsPass(in.Tokens, runner, cfg)
 
 	r := &Result{
-		SessionID:   in.SessionID,
-		Project:     in.Project,
-		TokenBudget: cfg.TokenBudget,
-		Memories:    memories,
-		GitRefs:     gitRefs,
-		Beads:       beadRefs,
+		SessionID:      in.SessionID,
+		Project:        in.Project,
+		TokenBudget:    cfg.TokenBudget,
+		GitTokenBudget: cfg.GitTokenBudget,
+		Memories:       memories,
+		GitRefs:        gitRefs,
+		Beads:          beadRefs,
 	}
 	trimToBudget(r, cfg, measureRender)
 	return r

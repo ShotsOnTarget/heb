@@ -5,9 +5,10 @@ import "strings"
 // Config holds all tunable thresholds for the recall pipeline.
 // Defaults match the Part A spec and the original recall.md behaviour.
 type Config struct {
-	TokenBudget     int    // default 300
+	TokenBudget     int    // default 300 (memory budget)
+	GitTokenBudget  int    // default 150 (git refs budget, separate from memory)
 	GitResults      int    // default 3
-	GitCap          int    // default 10
+	GitCap          int    // default 10 (hard ceiling after attention filter)
 	BeadsResults    int    // default 2
 	MemoryLimit     int    // default 16 (RecallLimit)
 	MinComponentLen int    // default 2
@@ -21,6 +22,7 @@ type Config struct {
 func DefaultConfig() Config {
 	return Config{
 		TokenBudget:     300,
+		GitTokenBudget:  150,
 		GitResults:      3,
 		GitCap:          10,
 		BeadsResults:    2,

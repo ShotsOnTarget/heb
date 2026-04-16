@@ -20,15 +20,48 @@ func mkMem(body string, score float64, source string) store.Scored {
 	}
 }
 
-func TestTrimCapsGitRefs(t *testing.T) {
+func mkGitRef(hash, msg string, score float64) GitRef {
+	return GitRef{Hash: hash, Message: msg, Score: score, AgeDays: 1}
+}
+
+func TestTrimCapsGitRefsByBudget(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.GitCap = 3
+	cfg.GitTokenBudget = 150
+	// Each ref is ~15 tokens, budget=150 fits all 5, but GitCap=3 limits
 	r := &Result{
-		GitRefs: []GitRef{{Hash: "g1"}, {Hash: "g2"}, {Hash: "g3"}, {Hash: "g4"}, {Hash: "g5"}},
+		GitRefs: []GitRef{
+			mkGitRef("g1", "feat: add thing", 2.0),
+			mkGitRef("g2", "fix: bug", 1.8),
+			mkGitRef("g3", "refactor: stuff", 1.5),
+			mkGitRef("g4", "docs: readme", 1.2),
+			mkGitRef("g5", "chore: cleanup", 1.0),
+		},
 	}
 	trimToBudget(r, cfg, fakeMeasure)
 	if len(r.GitRefs) != 3 {
-		t.Errorf("git refs = %d, want 3 (cap)", len(r.GitRefs))
+		t.Errorf("git refs = %d, want 3 (GitCap)", len(r.GitRefs))
+	}
+}
+
+func TestTrimGitRefsByTokenBudget(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.GitCap = 100         // high cap — budget should be the limiter
+	cfg.GitTokenBudget = 30  // tight budget — ~2 refs fit
+	r := &Result{
+		GitRefs: []GitRef{
+			mkGitRef("g1", "feat: add thing", 2.0),
+			mkGitRef("g2", "fix: bug", 1.8),
+			mkGitRef("g3", "refactor: stuff", 1.5),
+			mkGitRef("g4", "docs: readme", 1.2),
+		},
+	}
+	trimToBudget(r, cfg, fakeMeasure)
+	if len(r.GitRefs) >= 4 {
+		t.Errorf("git refs = %d, want < 4 (budget should trim)", len(r.GitRefs))
+	}
+	if r.GitTokensUsed > cfg.GitTokenBudget {
+		t.Errorf("git tokens used %d > budget %d", r.GitTokensUsed, cfg.GitTokenBudget)
 	}
 }
 
@@ -60,16 +93,18 @@ func TestTrimPreservesMemoriesUntouched(t *testing.T) {
 	}
 }
 
-func TestTrimMeasuresTokens(t *testing.T) {
+func TestTrimSetsGitBudgetFields(t *testing.T) {
 	cfg := DefaultConfig()
+	cfg.GitTokenBudget = 200
 	r := &Result{
-		Memories: []store.Scored{mkMem("a", 0.5, "match")},
-		GitRefs:  []GitRef{{Hash: "h1"}},
-		Beads:    []BeadRef{{ID: "b1"}},
+		GitRefs: []GitRef{mkGitRef("h1", "feat: test", 1.5)},
 	}
 	trimToBudget(r, cfg, fakeMeasure)
-	if r.TokensUsed != 13 {
-		t.Errorf("tokens_used = %d, want 13", r.TokensUsed)
+	if r.GitTokenBudget != 200 {
+		t.Errorf("GitTokenBudget = %d, want 200", r.GitTokenBudget)
+	}
+	if r.GitTokensUsed <= 0 {
+		t.Errorf("GitTokensUsed = %d, want > 0", r.GitTokensUsed)
 	}
 }
 

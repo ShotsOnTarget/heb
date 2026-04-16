@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"database/sql"
 	"encoding/json"
@@ -49,7 +50,7 @@ func runPipeline(args []string) int {
 	}
 
 	// Hand off to claude for execution
-	result, err := executeViaClaude(sense.Raw, reflectJSON, filtered)
+	result, err := executeViaClaude(sense.Raw, reflectJSON, filtered, ret.GitRefs)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "heb: %v\n", err)
 		return 1
@@ -64,9 +65,8 @@ func runPipeline(args []string) int {
 	}
 
 	// Persist transcript + execute_meta (best-effort)
-	root, err := store.RepoRoot()
-	if err == nil {
-		s, err := store.Open(root)
+	{
+		s, err := store.Open()
 		if err == nil {
 			defer s.Close()
 			// Write user prompt turn
@@ -273,7 +273,8 @@ Do not ask about things you can determine by reading the codebase. Only ask abou
 // and captures the session ID, transcript, result, and file operations.
 // If filteredMemories is provided, they are included as the trusted memory
 // list (superseded memories already removed by FilterSuperseded).
-func executeViaClaude(userPrompt, reflectJSON string, filteredMemories []store.Scored) (*executeResult, error) {
+// gitRefs are relevant git commits, scored and budget-trimmed by the recall pipeline.
+func executeViaClaude(userPrompt, reflectJSON string, filteredMemories []store.Scored, gitRefs []retrieve.GitRef) (*executeResult, error) {
 	var memSection strings.Builder
 	if len(filteredMemories) > 0 {
 		memSection.WriteString("## Active memories (superseded entries removed)\n\n")
@@ -287,7 +288,17 @@ func executeViaClaude(userPrompt, reflectJSON string, filteredMemories []store.S
 		}
 		memSection.WriteString("\n")
 	}
-	combined := fmt.Sprintf("%s\n\n%s## Reflect analysis\n\n%s", userPrompt, memSection.String(), reflectJSON)
+
+	var gitSection strings.Builder
+	if len(gitRefs) > 0 {
+		gitSection.WriteString("## Relevant git commits\n\n")
+		for _, g := range gitRefs {
+			fmt.Fprintf(&gitSection, "- %s %s (score: %.2f, %dd ago)\n", g.Hash, g.Message, g.Score, int(g.AgeDays))
+		}
+		gitSection.WriteString("\n")
+	}
+
+	combined := fmt.Sprintf("%s\n\n%s%s## Reflect analysis\n\n%s", userPrompt, memSection.String(), gitSection.String(), reflectJSON)
 	return runClaudePrint([]string{"--print", "--verbose", "--output-format", "stream-json", "--system-prompt", executeSystemPrompt, "--allowedTools", "Read,Write,Edit,Grep,Glob,Bash"}, combined)
 }
 
@@ -295,6 +306,11 @@ func executeViaClaude(userPrompt, reflectJSON string, filteredMemories []store.S
 func resumeViaClaude(claudeSessionID, userPrompt string) (*executeResult, error) {
 	return runClaudePrint([]string{"--print", "--verbose", "--output-format", "stream-json", "--allowedTools", "Read,Write,Edit,Grep,Glob,Bash", "--resume", claudeSessionID}, userPrompt)
 }
+
+// streamProgress controls whether runClaudePrint streams live tool-use
+// status to stderr as claude works. When false, output is buffered and
+// only relayed after completion (original behaviour).
+var streamProgress = true
 
 // runClaude executes claude with the given args and stdin, parsing the JSON response.
 func runClaudePrint(claudeArgs []string, stdin string) (*executeResult, error) {
@@ -305,14 +321,21 @@ func runClaudePrint(claudeArgs []string, stdin string) (*executeResult, error) {
 	cmd.Env = filterEnv(os.Environ(), "CLAUDECODE")
 	cmd.Stdin = strings.NewReader(stdin)
 
+	fmt.Fprintln(os.Stderr, "executing...")
+
+	if streamProgress {
+		return runClaudePrintStreaming(cmd)
+	}
+	return runClaudePrintBuffered(cmd)
+}
+
+// runClaudePrintBuffered captures all output and parses after completion.
+func runClaudePrintBuffered(cmd *exec.Cmd) (*executeResult, error) {
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	fmt.Fprintln(os.Stderr, "executing...")
-
 	if err := cmd.Run(); err != nil {
-		// Print any stderr/stdout from claude for debugging
 		if se := stderr.String(); se != "" {
 			fmt.Fprintf(os.Stderr, "claude stderr: %s\n", se)
 		}
@@ -322,12 +345,141 @@ func runClaudePrint(claudeArgs []string, stdin string) (*executeResult, error) {
 		return nil, fmt.Errorf("claude: %w", err)
 	}
 
-	// Relay claude stderr (progress messages etc.)
 	if se := stderr.String(); se != "" {
 		fmt.Fprint(os.Stderr, se)
 	}
 
 	return parseClaudeJSON(stdout.String()), nil
+}
+
+// runClaudePrintStreaming reads NDJSON lines from claude's stdout as they
+// arrive, extracts tool-use events, and emits short status lines to stderr.
+func runClaudePrintStreaming(cmd *exec.Cmd) (*executeResult, error) {
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("stdout pipe: %w", err)
+	}
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("start claude: %w", err)
+	}
+
+	var collected strings.Builder
+	scanner := bufio.NewScanner(stdoutPipe)
+	scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		collected.WriteString(line)
+		collected.WriteByte('\n')
+
+		// Try to extract a status line from this NDJSON event
+		if status := extractStreamStatus(line); status != "" {
+			fmt.Fprintf(os.Stderr, "▸ %s\n", status)
+		}
+	}
+
+	if err := cmd.Wait(); err != nil {
+		return nil, fmt.Errorf("claude: %w", err)
+	}
+
+	return parseClaudeJSON(collected.String()), nil
+}
+
+// extractStreamStatus parses a single NDJSON line from claude's stream-json
+// output and returns a short human-readable status, or "" to skip.
+func extractStreamStatus(line string) string {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return ""
+	}
+
+	var ev struct {
+		Type    string `json:"type"`
+		Message *struct {
+			Role    string `json:"role"`
+			Content []struct {
+				Type  string `json:"type"`
+				Text  string `json:"text"`
+				Name  string `json:"name"`
+				Input json.RawMessage `json:"input"`
+			} `json:"content"`
+		} `json:"message"`
+	}
+	if json.Unmarshal([]byte(line), &ev) != nil {
+		return ""
+	}
+
+	if ev.Type != "assistant" || ev.Message == nil {
+		return ""
+	}
+
+	for _, c := range ev.Message.Content {
+		if c.Type == "tool_use" {
+			return formatToolStatus(c.Name, c.Input)
+		}
+	}
+
+	return ""
+}
+
+// formatToolStatus returns a short description of a tool invocation.
+func formatToolStatus(name string, rawInput json.RawMessage) string {
+	var input struct {
+		FilePath string `json:"file_path"`
+		Command  string `json:"command"`
+		Pattern  string `json:"pattern"`
+		Path     string `json:"path"`
+		Content  string `json:"content"`
+	}
+	json.Unmarshal(rawInput, &input)
+
+	switch name {
+	case "Read":
+		return fmt.Sprintf("Reading %s", shortPath(input.FilePath))
+	case "Write":
+		return fmt.Sprintf("Writing %s", shortPath(input.FilePath))
+	case "Edit":
+		return fmt.Sprintf("Editing %s", shortPath(input.FilePath))
+	case "Grep":
+		if input.Pattern != "" {
+			return fmt.Sprintf("Searching for '%s'", truncate(input.Pattern, 40))
+		}
+		return "Searching"
+	case "Glob":
+		if input.Pattern != "" {
+			return fmt.Sprintf("Finding files '%s'", truncate(input.Pattern, 40))
+		}
+		return "Finding files"
+	case "Bash":
+		if input.Command != "" {
+			return fmt.Sprintf("Running: %s", truncate(input.Command, 60))
+		}
+		return "Running command"
+	default:
+		return name
+	}
+}
+
+// shortPath returns the last two path segments for brevity.
+func shortPath(p string) string {
+	if p == "" {
+		return "?"
+	}
+	parts := strings.Split(strings.ReplaceAll(p, "\\", "/"), "/")
+	if len(parts) <= 2 {
+		return p
+	}
+	return strings.Join(parts[len(parts)-2:], "/")
+}
+
+// truncate limits s to n characters, adding "…" if trimmed.
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }
 
 // parseClaudeJSON extracts session ID, result text, cost, turns, and file
@@ -433,12 +585,7 @@ func parseClaudeJSON(raw string) *executeResult {
 // runResume continues an open heb session by resuming the Claude conversation.
 // Usage: heb resume [session_id] <prompt...>
 func runResume(args []string) int {
-	root, err := store.RepoRoot()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "heb: %v\n", err)
-		return 1
-	}
-	s, err := store.Open(root)
+	s, err := store.Open()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "heb: %v\n", err)
 		return 1

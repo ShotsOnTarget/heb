@@ -18,7 +18,7 @@ func doRetrieve(sense *senseResult) (*retrieve.Result, string, error) {
 	// and strip leading dashes so retrieval gets maximum substring coverage.
 	tokens := splitTokens(sense.Tokens)
 
-	memories := resolveMemories(tokens, cfg.MemoryLimit)
+	memories := resolveMemories(tokens, cfg.MemoryLimit, sense.Project)
 
 	result := retrieve.Run(retrieve.Input{
 		SessionID: sense.SessionID,
@@ -31,9 +31,8 @@ func doRetrieve(sense *senseResult) (*retrieve.Result, string, error) {
 
 	// Persist to session (best-effort)
 	jsonOut := retrieve.RenderJSON(result)
-	root, err := store.RepoRoot()
-	if err == nil {
-		s, err := store.Open(root)
+	{
+		s, err := store.Open()
 		if err == nil {
 			defer s.Close()
 			if err := store.WriteContract(s.DB(), sense.SessionID, "recall", jsonOut); err != nil {
@@ -42,8 +41,10 @@ func doRetrieve(sense *senseResult) (*retrieve.Result, string, error) {
 		}
 	}
 
-	fmt.Fprintf(os.Stderr, "recall: %d memories, %d git, %d beads, %d tokens used\n",
-		len(result.Memories), len(result.GitRefs), len(result.Beads), result.TokensUsed)
+	fmt.Fprintf(os.Stderr, "recall: %d memories (%d/%d tok), %d git (%d/%d tok), %d beads\n",
+		len(result.Memories), result.TokensUsed, result.TokenBudget,
+		len(result.GitRefs), result.GitTokensUsed, result.GitTokenBudget,
+		len(result.Beads))
 
 	return result, jsonOut, nil
 }

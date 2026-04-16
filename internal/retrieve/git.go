@@ -11,26 +11,27 @@ import (
 
 // GitRef is a single git log entry surfaced by the recall pipeline.
 type GitRef struct {
-	Hash    string `json:"hash"`
-	Message string `json:"message"`
-	Age     string `json:"age"`
+	Hash    string  `json:"hash"`
+	Message string  `json:"message"`
+	Age     string  `json:"age"`
+	Score   float64 `json:"score"`    // BM25 relevance score (0 = unscored file-match)
+	AgeDays float64 `json:"age_days"` // numeric age for recency display
 }
 
 // gitPass executes the full git log retrieval cascade for the given
-// contract:sense>recall tokens and returns up to cfg.GitCap deduplicated refs
-// ranked by BM25 relevance against ALL query tokens.
+// contract:sense>recall tokens and returns scored, attention-filtered refs.
 //
 // Pipeline:
-//  1. Gather candidates via IDF-sorted literal/decomposed lookups (existing)
+//  1. Gather candidates via IDF-sorted literal/decomposed lookups
 //  2. BM25-rank commit messages against the full token set
-//  3. Drop zero-score commits (no query token in message)
-//  4. Return top GitCap results
+//  3. Attention-filter: cut at relevance gaps (same logic as memories)
+//  4. Return survivors with scores and numeric age attached
 func gitPass(tokens []string, runner Runner, cfg Config) []GitRef {
 	if cfg.NoExternal {
 		return nil
 	}
 
-	// Phase 1: gather candidate commits (existing pipeline).
+	// Phase 1: gather candidate commits.
 	candidates := gitCandidates(tokens, runner, cfg)
 	if len(candidates) == 0 {
 		return nil
@@ -39,22 +40,76 @@ func gitPass(tokens []string, runner Runner, cfg Config) []GitRef {
 	// Phase 2: BM25-rank commit messages against all query tokens.
 	docs := make([]memory.Doc, len(candidates))
 	for i, ref := range candidates {
+		candidates[i].AgeDays = parseAgeDays(ref.Age)
 		docs[i] = memory.Doc{
 			Words:   memory.Tokenize(ref.Message),
-			AgeDays: parseAgeDays(ref.Age),
+			AgeDays: candidates[i].AgeDays,
 		}
 	}
 
 	ranked := memory.BM25Rank(docs, tokens)
 
-	out := make([]GitRef, 0, len(ranked))
+	// Build scored refs: BM25-scored first, then unscored file-matches
+	// (score 0) so they aren't lost.
+	used := make(map[int]bool, len(ranked))
+	out := make([]GitRef, 0, len(candidates))
 	for _, r := range ranked {
-		out = append(out, candidates[r.Index])
-		if len(out) >= cfg.GitCap {
-			break
+		ref := candidates[r.Index]
+		ref.Score = r.Score
+		used[r.Index] = true
+		out = append(out, ref)
+	}
+	for i, ref := range candidates {
+		if !used[i] {
+			out = append(out, ref) // score remains 0
 		}
 	}
+
+	// Phase 3: attention filter — cut at relevance gaps.
+	out = attentionFilterGit(out, cfg.GitCap)
 	return out
+}
+
+// attentionFilterGit applies the same competitive-inhibition logic as
+// memory recall: find the last significant score gap and cut there.
+// Refs with Score==0 (unscored file-matches) are always cut.
+// Always keeps at least gitAttentionMinKeep scored results.
+const (
+	gitAttentionMinKeep = 1
+	gitAttentionMinGap  = 1.20 // same threshold as memories
+)
+
+func attentionFilterGit(refs []GitRef, limit int) []GitRef {
+	if len(refs) == 0 {
+		return nil
+	}
+	// Drop zero-score refs — they matched via file content but have
+	// no BM25 relevance to the query tokens.
+	scored := make([]GitRef, 0, len(refs))
+	for _, r := range refs {
+		if r.Score > 0 {
+			scored = append(scored, r)
+		}
+	}
+	if len(scored) == 0 {
+		return nil
+	}
+
+	cap := len(scored)
+	if cap > limit {
+		cap = limit
+	}
+	if cap <= gitAttentionMinKeep {
+		return scored[:cap]
+	}
+
+	cutAt := cap
+	for i := gitAttentionMinKeep; i < cap; i++ {
+		if scored[i-1].Score/scored[i].Score >= gitAttentionMinGap {
+			cutAt = i
+		}
+	}
+	return scored[:cutAt]
 }
 
 // gitCandidates gathers deduplicated candidate refs across all tokens
