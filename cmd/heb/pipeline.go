@@ -267,7 +267,20 @@ type executeResult struct {
 
 const executeSystemPrompt = `If the prompt is ambiguous about design intent — what something should look like, how it should behave, or what data it should show — stop and ask clarifying questions before implementing. Keep questions specific and few (max 3). A 30-second answer from the developer saves a wrong implementation.
 
-Do not ask about things you can determine by reading the codebase. Only ask about decisions that require the developer's input.`
+Do not ask about things you can determine by reading the codebase. Only ask about decisions that require the developer's input.
+
+## Session Context
+
+You receive **Active memories** (observations about the codebase) and a **Reflect analysis** (prediction with risk assessment) at conversation start.
+
+Before executing any change:
+- Read the memories. They tell you how things are, not how they must be. If a requested change diverges from an observed pattern, that's worth mentioning — not blocking.
+- Read the prediction risks. If a risk has medium or higher confidence, surface it to the user with your assessment of whether it applies.
+- If memories suggest the request is part of a broader pattern, ask about scope before applying narrowly.
+
+You are not enforcing rules. You are providing informed judgment.
+
+Weight indicates confidence: >=0.70 high, 0.40-0.69 moderate, <0.40 speculative. Source [match] means directly relevant; [edge] means associated context from memory graph.`
 
 // executeViaClaude hands the user's prompt to claude --print --output-format stream-json
 // and captures the session ID, transcript, result, and file operations.
@@ -279,14 +292,42 @@ func executeViaClaude(userPrompt, reflectJSON string, filteredMemories []store.S
 	if len(filteredMemories) > 0 {
 		memSection.WriteString("## Active memories (superseded entries removed)\n\n")
 		now := time.Now().Unix()
+
+		// Group memories by topic for easier scanning.
+		type memEntry struct {
+			body   string
+			weight float64
+			age    int
+			source string
+		}
+		groups := make(map[string][]memEntry)
+		var groupOrder []string
 		for _, m := range filteredMemories {
 			age := int((now - m.UpdatedAt) / 86400)
 			if age < 0 {
 				age = 0
 			}
-			fmt.Fprintf(&memSection, "- %s (weight: %.2f, %dd ago)\n", m.TupleString(), m.Weight, age)
+			topic := humanizeTopic(m.TopicTokens)
+			if _, exists := groups[topic]; !exists {
+				groupOrder = append(groupOrder, topic)
+			}
+			groups[topic] = append(groups[topic], memEntry{
+				body:   humanizeBody(m.TupleString()),
+				weight: m.Weight,
+				age:    age,
+				source: m.Source,
+			})
 		}
-		memSection.WriteString("\n")
+
+		for _, topic := range groupOrder {
+			entries := groups[topic]
+			fmt.Fprintf(&memSection, "### %s\n", topic)
+			for _, e := range entries {
+				fmt.Fprintf(&memSection, "- [%s] %s (weight: %.2f, %dd ago)\n",
+					e.source, e.body, e.weight, e.age)
+			}
+			memSection.WriteString("\n")
+		}
 	}
 
 	var gitSection strings.Builder
@@ -480,6 +521,35 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+// humanizeBody converts underscore-encoded memory bodies to readable text.
+// "CLI_layer_and_pipeline_orchestration" → "CLI layer and pipeline orchestration"
+// Already-natural bodies pass through unchanged.
+func humanizeBody(body string) string {
+	// Don't touch bodies that already have spaces (natural language)
+	if strings.Contains(body, " ") {
+		return body
+	}
+	return strings.ReplaceAll(body, "_", " ")
+}
+
+// humanizeTopic converts comma-separated topic tokens to a section header.
+// "review,codebase,architecture" → "Review / Codebase / Architecture"
+// Empty topic tokens become "General".
+func humanizeTopic(topicTokens string) string {
+	topicTokens = strings.TrimSpace(topicTokens)
+	if topicTokens == "" {
+		return "General"
+	}
+	parts := strings.Split(topicTokens, ",")
+	for i, p := range parts {
+		p = strings.TrimSpace(p)
+		if len(p) > 0 {
+			parts[i] = strings.ToUpper(p[:1]) + p[1:]
+		}
+	}
+	return strings.Join(parts, " / ")
 }
 
 // parseClaudeJSON extracts session ID, result text, cost, turns, and file
