@@ -13,6 +13,16 @@ import (
 
 const reflectSystemPrompt = `You are a memory reconciliation engine. Given a developer's prompt and retrieved memories, produce a structured JSON reconciliation.
 
+## The predict/verify loop
+
+You are the **predict** half of a two-step self-calibration loop that keeps the memory graph honest:
+
+1. **Reflect (you)** issue falsifiable predictions, each traceable to specific source memories.
+2. Execution happens.
+3. **Learn** reconciles each prediction element against reality — matched predictions apply a small positive delta to their source tuples, wrong predictions apply a negative delta, missed outcomes become new lessons.
+
+Reflect and Learn are not independent functions; they are the two halves that make the loop work. Your predictions are only useful if Learn can classify them cleanly. Predictions that are vague, or not sourced to specific memories, produce no weight signal — or worse, pollute it. Specificity and source_tuples are the contract between you and Learn.
+
 ## Hard rules
 
 - DO NOT read files, run commands, or call any tools
@@ -231,21 +241,77 @@ func doReflect(sense *senseResult, ret *retrieve.Result) (*reflectResult, string
 	corrected, _ := json.Marshal(result)
 	raw = string(corrected)
 
-	// Display
-	fmt.Fprintln(os.Stderr, "REFLECT")
-	fmt.Fprintln(os.Stderr, "────────────────────────────────────────")
-	fmt.Fprintf(os.Stderr, "status:      %s\n", result.Status)
-	fmt.Fprintf(os.Stderr, "notes:       %s\n", result.Notes)
-	fmt.Fprintf(os.Stderr, "proceed:     %v\n", result.Proceed)
-	switch provider {
-	case "anthropic":
-		fmt.Fprintf(os.Stderr, "via:         anthropic api (haiku)\n")
-	case "openai":
-		fmt.Fprintf(os.Stderr, "via:         openai api (gpt-4.1-mini)\n")
-	default:
-		fmt.Fprintf(os.Stderr, "via:         claude --print\n")
+	// Emit reconcile detail lines for the GUI
+	var nConflicts, nExtensions int
+	if result.Conflicts != nil {
+		var conflicts []json.RawMessage
+		json.Unmarshal(result.Conflicts, &conflicts)
+		nConflicts = len(conflicts)
 	}
-	fmt.Fprintln(os.Stderr, "────────────────────────────────────────")
+	if result.Extensions != nil {
+		var extensions []json.RawMessage
+		json.Unmarshal(result.Extensions, &extensions)
+		nExtensions = len(extensions)
+	}
+	fmt.Fprintf(os.Stderr, "reconcile: %s — %d conflicts, %d extensions\n", result.Status, nConflicts, nExtensions)
+	if result.Notes != "" {
+		fmt.Fprintf(os.Stderr, "reconcile-notes: %s\n", result.Notes)
+	}
+	// Emit individual conflicts
+	if nConflicts > 0 {
+		var conflicts []struct {
+			ExistingTuple string  `json:"existing_tuple"`
+			ConflictType  string  `json:"conflict_type"`
+			NewValue      string  `json:"new_value"`
+			Confidence    float64 `json:"confidence"`
+		}
+		json.Unmarshal(result.Conflicts, &conflicts)
+		for _, c := range conflicts {
+			fmt.Fprintf(os.Stderr, "reconcile-conflict: [%s %.2f] %s → %s\n", c.ConflictType, c.Confidence, c.ExistingTuple, c.NewValue)
+		}
+	}
+
+	// Emit predict detail lines for the GUI
+	var pred struct {
+		ColdStart bool    `json:"cold_start"`
+		Overall   float64 `json:"overall"`
+		Files     []struct {
+			Path       string `json:"path"`
+			Confidence string `json:"confidence"`
+		} `json:"files"`
+		Approach struct {
+			Summary    string `json:"summary"`
+			Confidence string `json:"confidence"`
+		} `json:"approach"`
+		Outcome struct {
+			Summary    string `json:"summary"`
+			Confidence string `json:"confidence"`
+		} `json:"outcome"`
+		Risks []struct {
+			Risk       string `json:"risk"`
+			Confidence string `json:"confidence"`
+		} `json:"risks"`
+	}
+	if result.Prediction != nil {
+		json.Unmarshal(result.Prediction, &pred)
+	}
+	if pred.ColdStart {
+		fmt.Fprintf(os.Stderr, "predict: cold start (overall: %.2f)\n", pred.Overall)
+	} else {
+		fmt.Fprintf(os.Stderr, "predict: overall confidence %.2f\n", pred.Overall)
+		for _, f := range pred.Files {
+			fmt.Fprintf(os.Stderr, "predict-file: %s (%s)\n", f.Path, f.Confidence)
+		}
+		if pred.Approach.Summary != "" {
+			fmt.Fprintf(os.Stderr, "predict-approach: %s (%s)\n", pred.Approach.Summary, pred.Approach.Confidence)
+		}
+		if pred.Outcome.Summary != "" {
+			fmt.Fprintf(os.Stderr, "predict-outcome: %s (%s)\n", pred.Outcome.Summary, pred.Outcome.Confidence)
+		}
+		for _, r := range pred.Risks {
+			fmt.Fprintf(os.Stderr, "predict-risk: %s (%s)\n", r.Risk, r.Confidence)
+		}
+	}
 
 	// Persist to session (best-effort)
 	{

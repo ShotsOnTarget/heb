@@ -15,14 +15,23 @@ import (
 	"github.com/steelboltgames/heb/internal/store"
 )
 
-const learnSystemPrompt = `You are a pure session learner. Your only job is to read a transcript of a developer's session with an AI agent and emit a single contract:learn>consolidate JSON object.
+const learnSystemPrompt = `You are a pure session learner. Your only job is to read a transcript of a developer's session with an AI agent and emit a JSON object containing your judgment about the session.
+
+## The predict/verify loop
+
+You are the **verify** half of a two-step self-calibration loop that keeps the memory graph honest:
+
+1. **Reflect** issued falsifiable predictions, each traceable to specific source memories.
+2. Execution happened.
+3. **Learn (you)** reconcile each prediction element against reality — matched predictions apply a small positive delta to their source tuples, wrong predictions apply a negative delta, missed outcomes become new lessons.
+
+Reflect and Learn are not independent functions; they are the two halves that make the loop work. The reflect contract you receive is not background context — it is a specific hypothesis the graph made about this session, waiting for your verdict. Classify each element decisively (matched / partial / missed / wrong). Hedging to "partial" everywhere produces no weight signal and starves the loop. When evidence supports matched or wrong, commit.
 
 ## Hard rules
 
 - DO NOT propose new work, fixes, or follow-ups
 - DO NOT touch the memory graph yourself
-- DO NOT add fields, omit fields, or reshape the contract
-- DO NOT re-derive tokens or intent — copy from the sense contract verbatim
+- DO NOT add fields beyond the output shape
 - DO NOT invent decisions or corrections that did not happen
 - DO NOT write lessons below 0.50 confidence
 - DO NOT write lessons the session did not earn
@@ -32,33 +41,17 @@ const learnSystemPrompt = `You are a pure session learner. Your only job is to r
 ## Inputs
 
 You will receive:
-1. The sense contract (session metadata, tokens, intent)
+1. The sense contract (session metadata — tokens, intent, session_id)
 2. The recall contract (retrieved memories, git refs)
 3. The reflect contract (reconciliation, predictions)
 4. The full transcript (user prompts and assistant responses)
 
+Do NOT echo back mechanical fields (session_id, tokens, memory counts, files touched/read, correction count, source_tuples, etc.) — Go backfills all of those from the contracts after you produce judgment. Focus entirely on judgment.
+
 ## Output shape
 
 {
-  "session_id":     "from sense contract",
-  "bead_id":        null,
-  "project":        "from sense contract",
-  "timestamp_end":  "<TIMESTAMP_END>",
-  "raw_prompt":     "original prompt from sense.raw",
-  "intent":         "from sense contract",
-  "tokens":         ["from sense contract"],
-
-  "memory_loaded": {
-    "memories_loaded": 0,
-    "git_refs":        0,
-    "was_cold_start":  true
-  },
-
-  "recalled_via_edges": [],
-
   "implementation": {
-    "files_touched":    [],
-    "files_read":       [],
     "surprise_touches": [],
     "approach":         "one sentence past tense",
     "patterns_used":    []
@@ -67,14 +60,13 @@ You will receive:
   "decisions": [],
   "corrections": [
     {
-      "what": "what the agent did wrong",
+      "what":       "what the agent did wrong",
       "correction": "what the developer said instead",
-      "intensity": 0.5
+      "intensity":  0.5,
+      "impact":     "cosmetic | behavioral | architectural"
     }
   ],
-  "correction_count": 0,
-  "peak_intensity":   0.0,
-  "completed":        true,
+  "completed": true,
 
   "lessons": [
     {
@@ -91,20 +83,7 @@ You will receive:
 
 ## Field rules
 
-session_id — copy from sense contract verbatim.
-bead_id — scan transcript for bd update, bd close, bd show commands. First bead id found. null if none.
-project — from sense contract.
-timestamp_end — use: <TIMESTAMP_END>
-raw_prompt — original developer prompt from sense contract raw field.
-intent, tokens — copy from sense contract. Do not re-derive.
-
-memory_loaded — copy VERBATIM from the "Pre-computed fields" section. Do NOT re-derive.
-recalled_via_edges — copy VERBATIM from the "Pre-computed fields" section. Do NOT re-derive.
-prediction_reconciliation.elements[].source_tuples — copy from the "Pre-computed fields" section's prediction_source_tuples, matching by element type (files, approach, outcome, risks). Empty arrays are acceptable when no memories informed the prediction (e.g. cold start).
-
-implementation.files_touched — copy VERBATIM from "Pre-computed fields" if present. Otherwise extract from transcript.
-implementation.files_read — copy VERBATIM from "Pre-computed fields" if present. Otherwise extract from transcript. Superset of files_touched.
-implementation.surprise_touches — files in files_read with no obvious connection to the tokens. Empty if intent was understand.
+implementation.surprise_touches — files read during the session with no obvious connection to the tokens from sense. Empty if intent was understand.
 implementation.approach — one sentence, past tense, concrete.
 implementation.patterns_used — architectural patterns actually applied. Empty if none.
 
@@ -124,8 +103,6 @@ corrections — every developer correction. Each object has exactly four fields:
     - architectural: wrong approach, wrong file, wrong pattern — e.g. "don't mock the DB", "use the existing manager". High lesson value.
 Do NOT use "developer_input" or any other field name. Empty array if none.
 
-correction_count — length of corrections array.
-peak_intensity — max intensity, or 0.0.
 completed — true if the task was finished.
 
 lessons — what should be remembered. Each lesson body is free-form text — terse, useful, greppable. No forced structure. Max 8. Min 0. Confidence >= 0.50.
@@ -191,7 +168,18 @@ When reviewing the transcript, give EQUAL attention to early exchanges (design p
 Only write lessons if at least one of: corrections exist, task incomplete, peak intensity > 0.3, decisions exist, files touched > 0, new observations not in retrieved memories, or prediction_reconciliation contains contradictions.
 
 Scope: project (codebase-specific) or universal_candidate (cross-project).
-Confidence: 0.90+ (developer explicitly stated rule), 0.75-0.90 (observed and accepted), 0.50-0.75 (inferred, not confirmed), below 0.50 (do not write).
+
+Confidence — calibrate tight. Most lessons from a routine session should fall in 0.70-0.80, not 0.85+.
+
+- **0.90+** — the developer stated this as an explicit rule. You must be able to quote the developer: "always X", "never Y", a direct instruction framed as a principle, or a hard correction. If you cannot point to a specific turn where the developer said it, this is not 0.90.
+- **0.80-0.89** — observed pattern confirmed by a behavioral or architectural correction, or a design decision recorded as a decision entry. Active endorsement, not mere non-objection.
+- **0.70-0.79** — the agent observed the pattern and the developer accepted the work without pushback. This is the default band for routine session lessons. Acceptance is not explicit confirmation.
+- **0.50-0.69** — inferred from the session but not directly confirmed. Document with care; these are hypotheses.
+- **<0.50** — do not write.
+
+Calibration check: if more than half your session's lessons are >= 0.85, you are inflating. A session with no corrections and no explicit rules should produce a cluster around 0.70-0.80. Reserve 0.90+ for the moments the developer drew a clear line.
+
+Cosmetic corrections (per the impact field: colors, labels, text casing) do not earn 0.85+ confidence even when they feel emphatic. A correction like "change OVERLOAD to Overload" is cosmetic, confidence band 0.50-0.65 — do not stamp 0.90 because the correction was emphatic. Emphasis measures intensity, not the lesson's generalisability.
 
 prediction_reconciliation — reconcile reflect predictions against what actually happened. For each element (files, approach, outcome, risks): matched, partial, missed, or wrong. Set to null if no prediction exists or if cold_start was true.
 
@@ -200,20 +188,47 @@ Prediction reconciliation shape when present:
   "cold_start": false,
   "elements": [
     {
-      "element":       "files | approach | outcome | risks",
-      "predicted":     "what was predicted",
-      "actual":        "what actually happened",
-      "result":        "matched | partial | missed | wrong",
-      "source_tuples": [],
-      "event":         "prediction_confirmed | prediction_contradicted | null",
-      "lesson":        "free-form text correction or null"
+      "element":   "files | approach | outcome | risks",
+      "predicted": "what was predicted",
+      "actual":    "what actually happened",
+      "result":    "matched | partial | missed | wrong",
+      "event":     "prediction_confirmed | prediction_contradicted | null",
+      "lesson":    "free-form text correction or null"
     }
   ],
   "matched_count": 0,
   "total_count":   0,
   "overall":       "matched | partial | missed",
   "summary":       "one-line summary"
-}`
+}
+
+### Verdict specificity — partial is narrow, not safe
+
+Each verdict produces a different weight signal. "partial" produces no clean delta on source memories — use it only when the prediction is genuinely half-true. Hedging to "partial" on a prediction that was cleanly right or cleanly wrong starves the Hebbian loop.
+
+**matched** — the prediction's claim held. Extra things that happened and were not predicted do NOT make it partial; they become separate "missed" elements. A prediction of "files X and Y will be touched" is matched when X and Y were touched, even if Z was also touched.
+
+**wrong** — the prediction's claim contradicted reality. Not "imprecise" — contradicted. If the prediction named specific files and none of them were modified, that is wrong. If the prediction was written for one language or one code area and reality was a different language or area, that is wrong.
+
+**missed** — something significant happened that was not predicted at all. Emit as a separate element, not as a qualifier on another prediction.
+
+**partial** — the prediction was literally half-true. One of two equally-predicted items was correct; the other was not. A directionally correct but imprecise prediction is NOT partial — it is matched (if the core claim held) or wrong (if the core claim failed).
+
+Examples:
+
+BAD (hedge): predicted game/main.gd, actual core/deck_manager.gd — marked partial. The predicted file was not touched; a different file was. This is wrong.
+
+BAD (hedge): predicted 3 C# files (.cs), actual one .gd file — marked partial. Wrong language, wrong files. This is wrong.
+
+BAD (hedge): predicted {ui/cargo_bay_ui.gd, game/elite_card_reward.gd, game/main.gd}, actual {core/deck_manager.gd, game/main.gd, test_deck_manager.gd} — marked partial. Only one predicted file (main.gd) was touched, and the core logic was in a file the prediction did not name at all. The claim "logic lives in cargo_bay_ui and elite_card_reward" was contradicted. This is wrong.
+
+BAD (hedge): predicted {ship_data.gd, ship_fitting.gd}, actual {ship_data.gd, ship_fitting.gd, test_ship_data.gd, test_ship_fitting.gd} — marked partial. Both predicted files WERE touched. This is matched; the test files are a separate "missed" element.
+
+GOOD: predicted "heb.exe references may exist in test scripts or documentation", actual "references were in settings.local.json" — partial. The general claim (references exist in repo metadata) held; the specific location was wrong. Genuinely half-true.
+
+GOOD: predicted two equally-weighted files, one touched and one not. Half the claim held. Partial.
+
+Before marking partial, ask: if I had to pick matched or wrong, which is closer? If there is an answer, that is the correct verdict.`
 
 // doLearn runs the learn step: gathers contracts + transcript from the DB,
 // calls an LLM to produce a contract:learn>consolidate JSON, and persists it.
@@ -242,30 +257,38 @@ func doLearn(sessionID string) (string, error) {
 	// that the LLM would otherwise have to extract manually.
 	precomputed := precomputeFields(recallJSON, reflectJSON, executeMetaJSON)
 
-	timestampEnd := time.Now().UTC().Format("2006-01-02T15:04:05Z")
-	systemPrompt := strings.ReplaceAll(learnSystemPrompt, "<TIMESTAMP_END>", timestampEnd)
+	// timestamp_end is backfilled from time.Now in backfillLearnContract
+	systemPrompt := learnSystemPrompt
 
 	fmt.Fprintf(os.Stderr, "learning from session %s...\n", sessionID)
 
 	// Check if resume mode is configured
 	learnModel, _ := configLookup("learn.model", false)
-	var raw string
+	var judgment string
 
 	if learnModel == "resume" {
-		raw, err = doLearnViaResume(s, sessionID, systemPrompt, senseJSON, recallJSON, reflectJSON, precomputed)
+		judgment, err = doLearnViaResume(s, sessionID)
 	} else {
-		raw, err = doLearnViaAPI(s, sessionID, systemPrompt, senseJSON, recallJSON, reflectJSON, precomputed)
+		judgment, err = doLearnViaAPI(s, sessionID, systemPrompt, senseJSON, recallJSON, reflectJSON, precomputed)
 	}
 	if err != nil {
 		return "", err
 	}
 
-	raw = stripJSONFences(strings.TrimSpace(raw))
+	judgment = stripJSONFences(strings.TrimSpace(judgment))
 
-	// Validate it's parseable JSON
+	// Validate LLM output parses as JSON before backfilling
 	var check map[string]any
-	if err := json.Unmarshal([]byte(raw), &check); err != nil {
-		return "", fmt.Errorf("invalid JSON from learn: %v\nraw: %s", err, raw)
+	if err := json.Unmarshal([]byte(judgment), &check); err != nil {
+		return "", fmt.Errorf("invalid JSON from learn: %v\nraw: %s", err, judgment)
+	}
+
+	// Backfill mechanical fields (session_id, tokens, memory_loaded, files,
+	// source_tuples, etc.) from sense + precomputed. Same path for API and
+	// resume modes — LLM produces judgment, Go owns mechanical wiring.
+	raw, err := backfillLearnContract(judgment, senseJSON, precomputed)
+	if err != nil {
+		return "", fmt.Errorf("backfill learn contract: %w", err)
 	}
 
 	// Persist learn contract
@@ -335,6 +358,12 @@ Review this conversation and produce a JSON object with your analysis. You alrea
 
 Output ONLY the JSON object below — no markdown fences, no preamble.
 
+## The predict/verify loop
+
+You are the **verify** half of a two-step self-calibration loop. Earlier in this session, **Reflect** issued falsifiable predictions traceable to specific source memories. Execution then happened. Your job now is to reconcile each prediction element against what actually happened — matched predictions apply a small positive delta to their source tuples, wrong predictions apply a negative delta, missed outcomes become new lessons.
+
+Reflect and Learn are not independent functions; they are the two halves that make the loop work. The reflect output you saw earlier is a specific hypothesis the graph made about this session, waiting for your verdict. Classify each element decisively. Hedging to "partial" everywhere produces no weight signal and starves the loop. When evidence supports matched or wrong, commit.
+
 {
   "implementation": {
     "surprise_touches": [],
@@ -384,6 +413,18 @@ Output ONLY the JSON object below — no markdown fences, no preamble.
 - Code anchor lessons (map identifier→purpose) do NOT count against the 8-lesson max. Cap at 4.
 - Only write lessons if: corrections exist, task incomplete, decisions exist, files touched > 0, or new non-obvious observations.
 
+## Confidence — calibrate tight
+
+Most routine-session lessons belong in 0.70-0.80. If more than half your session's lessons are >= 0.85, you are inflating.
+
+- **0.90+** — developer stated this as an explicit rule. You must be able to quote them ("always X", "never Y", a hard correction). If you cannot, not 0.90.
+- **0.80-0.89** — observed pattern confirmed by a behavioral/architectural correction or a recorded decision. Active endorsement, not non-objection.
+- **0.70-0.79** — observed pattern, developer accepted the work without pushback. Default band.
+- **0.50-0.69** — inferred, not confirmed. Hypothesis.
+- **<0.50** — do not write.
+
+Cosmetic corrections (colors, labels, text casing) stay at 0.50-0.65 even when emphatic. Emphasis measures intensity, not lesson generalisability.
+
 ## Correction rules
 
 - Only include corrections where the developer pushed back on your work.
@@ -415,13 +456,29 @@ If you received a Reflect analysis with predictions at the start, reconcile each
   "overall":       "matched | partial | missed",
   "summary":       "one-line summary"
 }
-Set to null if no prediction was provided or if this was a cold start.`
+Set to null if no prediction was provided or if this was a cold start.
+
+### Verdict specificity — partial is narrow, not safe
+
+"partial" produces no clean weight delta — use it only when the prediction is genuinely half-true. Hedging to partial on a prediction that was cleanly right or cleanly wrong starves the Hebbian loop.
+
+- **matched** — the claim held. Extras happening that were not predicted become separate "missed" elements, not a partial qualifier.
+- **wrong** — the claim contradicted reality. Not "imprecise" — contradicted. Wrong file, wrong language, wrong approach → wrong.
+- **missed** — something significant happened that was not predicted at all. Separate element.
+- **partial** — literally half-true. One of two equally-predicted items was correct; the other was not. A directionally correct but imprecise prediction is NOT partial.
+
+BAD (hedge): predicted file A, actual file B → wrong, not partial.
+BAD (hedge): predicted both files A and B; both were touched plus C → matched, with C as a separate "missed".
+BAD (hedge): predicted one language, actual another → wrong, not partial.
+GOOD: predicted two equally-weighted files, one touched and one not → partial.
+
+Before marking partial, ask: if I had to pick matched or wrong, which is closer? If there is an answer, that is the verdict.`
 
 // doLearnViaResume resumes the Claude Code session with a focused learn prompt.
 // Claude already has full conversation context — it only produces judgment fields
-// (lessons, corrections, decisions, approach). Go backfills all mechanical fields
-// (session_id, tokens, memory_loaded, files_touched, etc.) from the contracts.
-func doLearnViaResume(s *store.SQLiteStore, sessionID, _, senseJSON, _, _ string, precomputed string) (string, error) {
+// (lessons, corrections, decisions, approach). Returns raw judgment JSON; the
+// caller (doLearn) runs backfillLearnContract on it.
+func doLearnViaResume(s *store.SQLiteStore, sessionID string) (string, error) {
 	// Find the Claude session to resume
 	claudeSessionID, err := store.LatestClaudeSessionID(s.DB(), sessionID)
 	if err != nil {
@@ -442,8 +499,7 @@ func doLearnViaResume(s *store.SQLiteStore, sessionID, _, senseJSON, _, _ string
 		return "", fmt.Errorf("claude resume learn: %w", err)
 	}
 
-	// Backfill mechanical fields from contracts
-	return backfillLearnContract(result.ResultText, senseJSON, precomputed)
+	return result.ResultText, nil
 }
 
 // backfillLearnContract merges Claude's judgment output with mechanical fields
@@ -468,10 +524,11 @@ func backfillLearnContract(judgmentJSON, senseJSON, precomputed string) (string,
 
 	// Extract fields from pre-computed
 	var pre struct {
-		MemoryLoaded     map[string]any `json:"memory_loaded"`
-		RecalledViaEdges []string       `json:"recalled_via_edges"`
-		FilesTouched     []string       `json:"files_touched"`
-		FilesRead        []string       `json:"files_read"`
+		MemoryLoaded           map[string]any      `json:"memory_loaded"`
+		RecalledViaEdges       []string            `json:"recalled_via_edges"`
+		FilesTouched           []string            `json:"files_touched"`
+		FilesRead              []string            `json:"files_read"`
+		PredictionSourceTuples map[string][]string `json:"prediction_source_tuples"`
 	}
 	json.Unmarshal([]byte(precomputed), &pre)
 
@@ -504,6 +561,29 @@ func backfillLearnContract(judgmentJSON, senseJSON, precomputed string) (string,
 		}
 		if pre.FilesRead != nil {
 			impl["files_read"] = pre.FilesRead
+		}
+	}
+
+	// Inject source_tuples on reconciliation elements from reflect's prediction.
+	// Reflect already attributed which memories informed each element — that
+	// attribution is the authority for weight deltas. The LLM is not asked to
+	// produce source_tuples; Go copies them verbatim here.
+	if pre.PredictionSourceTuples != nil {
+		if pr, ok := judgment["prediction_reconciliation"].(map[string]any); ok {
+			if elements, ok := pr["elements"].([]any); ok {
+				for _, e := range elements {
+					em, ok := e.(map[string]any)
+					if !ok {
+						continue
+					}
+					etype, _ := em["element"].(string)
+					tuples := pre.PredictionSourceTuples[etype]
+					if tuples == nil {
+						tuples = []string{}
+					}
+					em["source_tuples"] = tuples
+				}
+			}
 		}
 	}
 
