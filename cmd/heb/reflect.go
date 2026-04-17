@@ -64,6 +64,17 @@ If no memories were retrieved, status is "confirms" with notes "cold start — n
 
 After conflict detection, predict what will happen during execution. The prediction is the memory graph's model of reality expressed as falsifiable statements. After execution, /learn reconciles each element against what actually happened. Matched predictions strengthen source memories. Wrong predictions weaken them. Vague predictions that can't be cleanly classified as matched or wrong pollute the weight signal — they are worse than no prediction at all.
 
+### The prediction is a memory-grounded code plan
+
+The prediction is what RETRIEVED MEMORY tells you about the prompt's task — specifically, the code plan an agent without codebase access, armed only with the retrieved memories and the prompt, would produce.
+
+The prompt and retrieved memories are INPUTS to the prediction, not outputs. Entity names given in the prompt — file paths, function names, string literals, button labels, popup titles, signal names — do not become the prediction merely by being restated in structured form. A prediction says what MEMORY contributes BEYOND the prompt:
+
+- If the prompt names X, the prediction says where memory believes X LIVES, what memory says CALLS X, and what memory warns about X interacting with adjacent systems.
+- If memory is silent on X, set cold_start: true for that field. "I don't know where X lives" is more valuable than "X needs to be renamed" — the latter merely restates the prompt.
+
+Self-check before emitting: would an agent without codebase access produce this prediction using only the retrieved memories? If every entity named in the prediction was already named in the prompt, you paraphrased the prompt — the prediction is worthless for weight signal. Strip those elements to cold_start, or find the memory that actually informs them.
+
 ### Hard rule: specificity or silence
 
 Every prediction element must be specific enough that /learn can mark it "matched" or "wrong" without ambiguity. If you don't have enough signal to be specific, set cold_start: true and leave element arrays/summaries empty. A cold-start prediction that says "I don't know" is more valuable than a hedged prediction that says "probably something in the combat system".
@@ -83,11 +94,13 @@ Every non-cold-start prediction element MUST have at least one entry in source_t
 - GOOD: "internal/consolidate/*.go" (glob pattern, verifiable)
 - GOOD: "commands/remember.md, commands/heb.md" (specific set)
 
-**approach** — a concrete technical statement about HOW the task will be accomplished. Must name specific functions, patterns, or operations.
+**approach** — a concrete technical statement about HOW the task will be accomplished, grounded in memory. Must name functions, signals, patterns, or operations that retrieved memory supplied — not entities the prompt supplied.
 - BAD: "implement the feature" (restates the prompt)
 - BAD: "modify the relevant files" (says nothing)
+- BAD (prompt-paraphrase): prompt names Salvage button, hold-to-press, ORE popup, "Choose New Module" title → approach "Modify the combat victory flow to trigger the salvage button with renamed text 'Salvage' using the hold-to-fill pattern; display the ORE reward popup, then the elite card popup titled 'Choose New Module'". Every entity came from the prompt. Memory contributed nothing. This is a restatement, not a prediction.
 - GOOD: "add a new case to the switch in runCommand() in main.go, wire it to a new doFoo() function following the doReflect pattern"
 - GOOD: "replace the hardcoded threshold with a config value read from heb.toml via loadConfig()"
+- GOOD (memory-grounded, given memories "combat_reward flow lives in main.gd" + "popups-in-main pattern"): "rename 'Reduce' string literal in game/main.gd where _show_combat_result fires; gate _return_to_map behind the module-picker's existing dismiss signal; elite card popup title likely in main.gd per popups-in-main, not in ui/"
 
 **outcome** — an observable end state that can be verified by inspecting code, running tests, or checking behavior. Must not simply restate the prompt.
 - BAD: "the feature will work as expected" (tautology)
@@ -95,11 +108,13 @@ Every non-cold-start prediction element MUST have at least one entry in source_t
 - GOOD: "go test ./internal/consolidate/... passes with the new threshold case covered"
 - GOOD: "heb status output includes a new 'dreams' line showing count and last-dream timestamp"
 
-**risks** — specific failure modes with triggering conditions. Each risk must name WHAT could fail and UNDER WHAT CONDITION. Empty risks is only correct when no retrieved memory suggests a failure mode. If a memory describes a pattern, convention, or constraint that the prompt's task could violate or interact with badly, that IS a risk — name it.
+**risks** — specific failure modes with triggering conditions, grounded in memory. Each risk must name WHAT could fail and UNDER WHAT CONDITION. Empty risks is only correct when no retrieved memory suggests a failure mode. If a memory describes a pattern, convention, or constraint that the prompt's task could violate or interact with badly, that IS a risk — name it.
 - BAD: "some files may be complex" (not a failure mode)
 - BAD: "there might be edge cases" (always true, not useful)
+- BAD (prompt-paraphrase / tautology): prompt says "rename elite card popup to Choose New Module and don't return to map" → risk "if the elite card popup is not renamed or the flow returns to the map prematurely, the reward sequence will not match the new design". This is "if the task is done wrong, the task will be wrong" — restating the prompt's requirements as risks produces no memory-grounded signal.
 - GOOD: "if memories table has NULL updated_at rows, the age calculation in doReflect will panic on integer division"
 - GOOD: "the BM25 scorer in retrieve.go uses TF-IDF weights that may not rank the new token type correctly — existing tests don't cover multi-word tokens"
+- GOOD (memory-grounded, given memory "cargo_bay_popup lives in main.gd not ui/cargo_bay_ui.gd"): "elite card popup may live in main.gd rather than ui/ per the popups-in-main pattern — any search of ui/ for 'Level Up' will miss it"
 
 ### Confidence
 
