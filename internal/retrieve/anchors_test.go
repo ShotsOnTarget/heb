@@ -129,8 +129,11 @@ func TestFormatAnchorSection_RendersHitsAndStale(t *testing.T) {
 	if !strings.Contains(out, "`_at_home_base`: game/main.gd:44, game/state.gd:18") {
 		t.Errorf("hit formatting missing: %s", out)
 	}
-	if !strings.Contains(out, "`RunState`") || !strings.Contains(out, "Stale") {
+	if !strings.Contains(out, "`RunState`") || !strings.Contains(out, "not found") {
 		t.Errorf("stale formatting missing: %s", out)
+	}
+	if !strings.Contains(out, "Pre-resolved symbol locations") {
+		t.Errorf("authoritative header missing: %s", out)
 	}
 }
 

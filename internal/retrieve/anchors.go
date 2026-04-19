@@ -215,8 +215,14 @@ func ResolveAnchors(root string, symbols []string, maxHitsPerSymbol int) []Symbo
 }
 
 // FormatAnchorSection renders a compact markdown section for the execute
-// prompt. Symbols with hits come first; stale (not-found) entries follow,
-// capped at maxNotFound so the prompt stays tight.
+// prompt. Framing is deliberately authoritative — anchors are verified
+// grep results, not hints, and the prompt should reflect that so the
+// agent does not re-Grep symbols already located.
+//
+// Returns "" when there is nothing to show. Never emits a dangling header
+// with an empty body: if found is empty, the "pre-resolved" block is
+// omitted; if missing is empty or maxNotFound==0, the "not found" block
+// is omitted.
 func FormatAnchorSection(anchors []SymbolAnchors, maxNotFound int) string {
 	if len(anchors) == 0 {
 		return ""
@@ -232,40 +238,49 @@ func FormatAnchorSection(anchors []SymbolAnchors, maxNotFound int) string {
 			found = append(found, a)
 		}
 	}
-	if len(found) == 0 && len(missing) == 0 {
+	showMissing := len(missing) > 0 && maxNotFound > 0
+	if len(found) == 0 && !showMissing {
 		return ""
 	}
 
 	var b strings.Builder
-	b.WriteString("## Symbol anchors (from recalled memories)\n\n")
-	for _, a := range found {
-		locs := make([]string, len(a.Hits))
-		for i, h := range a.Hits {
-			locs[i] = h.File + ":" + itoa(h.Line)
+	if len(found) > 0 {
+		b.WriteString("## Pre-resolved symbol locations (verified in current tree)\n\n")
+		b.WriteString("Each entry below was located by grep. Use these directly — do not re-Glob or re-Grep these symbols.\n\n")
+		for _, a := range found {
+			locs := make([]string, len(a.Hits))
+			for i, h := range a.Hits {
+				locs[i] = h.File + ":" + itoa(h.Line)
+			}
+			b.WriteString("- `")
+			b.WriteString(a.Symbol)
+			b.WriteString("`: ")
+			b.WriteString(strings.Join(locs, ", "))
+			b.WriteString("\n")
 		}
-		b.WriteString("- `")
-		b.WriteString(a.Symbol)
-		b.WriteString("`: ")
-		b.WriteString(strings.Join(locs, ", "))
 		b.WriteString("\n")
 	}
-	if len(missing) > 0 && maxNotFound > 0 {
+	if showMissing {
 		shown := missing
 		if len(shown) > maxNotFound {
 			shown = shown[:maxNotFound]
 		}
-		b.WriteString("\n_Stale (no hits — memory may reference removed/renamed code):_ ")
-		names := make([]string, len(shown))
-		for i, m := range shown {
-			names[i] = "`" + m.Symbol + "`"
+		if len(found) > 0 {
+			b.WriteString("### Symbols referenced by memory but not found\n\n")
+		} else {
+			b.WriteString("## Symbols referenced by memory but not found\n\n")
 		}
-		b.WriteString(strings.Join(names, ", "))
+		b.WriteString("These tokens appear in recalled memories but have no hits in the current tree. The referencing memory is likely stale — flag it in your response.\n\n")
+		for _, m := range shown {
+			b.WriteString("- `")
+			b.WriteString(m.Symbol)
+			b.WriteString("`\n")
+		}
 		if len(missing) > maxNotFound {
-			b.WriteString(", …")
+			b.WriteString("- …\n")
 		}
 		b.WriteString("\n")
 	}
-	b.WriteString("\n")
 	return b.String()
 }
 

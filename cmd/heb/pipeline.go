@@ -444,20 +444,101 @@ Do not ask about things you can determine by reading the codebase. Only ask abou
 
 ## Session Context
 
-You receive four sections at conversation start:
+You receive up to four sections at conversation start (any may be absent):
 - **Active memories** — observations about the codebase.
-- **Symbol anchors** — identifiers from those memories pre-resolved to ` + "`file:line`" + `. Jump straight to these locations instead of re-grepping the symbols. Anchors listed under *Stale* had no hits in the current tree — treat the referencing memory as possibly outdated.
+- **Pre-resolved symbol locations** — identifiers from recalled memories looked up by grep in the current tree. These are verified facts. Use them directly; do not re-Grep or re-Glob them. Entries under *Symbols referenced by memory but not found* were named in memory but absent from the tree — call out the referencing memory as stale in your response.
 - **Relevant git commits** — recent commits scored against the prompt. Use them for recency context (e.g. "X was refactored 2 days ago").
-- **Reflect analysis** — a prediction with risk assessment.
+- **Memory reconciliation** — memories the prompt contradicts or extends. When a memory is listed under Conflicts, apply the prompt's value over the memory's.
 
 Before executing any change:
 - Read the memories. They tell you how things are, not how they must be. If a requested change diverges from an observed pattern, that's worth mentioning — not blocking.
-- Read the prediction risks. If a risk has medium or higher confidence, surface it to the user with your assessment of whether it applies.
+- When a reconciliation conflict is listed, the prompt supersedes the memory — use the prompt's value.
 - If memories suggest the request is part of a broader pattern, ask about scope before applying narrowly.
 
 You are not enforcing rules. You are providing informed judgment.
 
 Weight indicates confidence: >=0.70 high, 0.40-0.69 moderate, <0.40 speculative. Source [match] means directly relevant; [edge] means associated context from memory graph.`
+
+// reconciliationConflict is the execute-visible subset of a Reflect conflict.
+type reconciliationConflict struct {
+	ExistingTuple string  `json:"existing_tuple"`
+	ConflictType  string  `json:"conflict_type"`
+	NewValue      string  `json:"new_value"`
+	Confidence    float64 `json:"confidence"`
+}
+
+// reconciliationExtension is the execute-visible subset of a Reflect extension.
+type reconciliationExtension struct {
+	ExistingTuple string `json:"existing_tuple"`
+	Extension     string `json:"extension"`
+}
+
+// renderReconciliation formats the memory-reconciliation slice of a reflect
+// contract for execute's prompt — which memories the prompt overrides and
+// what the prompt adds on top — as human-readable markdown.
+//
+// Predictions (files/approach/outcome/risks/overall/cold_start) are the
+// falsifiable hypotheses that /learn reconciles against execute's actual
+// behaviour, and showing them to execute contaminates that measurement.
+// Notes are dropped because they can leak prediction framing. Both are
+// still present in the stored reflect contract, which /learn reads directly
+// — only execute's view is filtered.
+//
+// Superseded conflicts are already dropped from the memory list by
+// FilterSuperseded, so they are omitted here to avoid redundant noise.
+//
+// Returns "" when there is nothing for execute to act on. Never emits a
+// dangling header with no body underneath.
+func renderReconciliation(reflectJSON string) string {
+	if strings.TrimSpace(reflectJSON) == "" {
+		return ""
+	}
+	var parsed struct {
+		Conflicts  []reconciliationConflict  `json:"conflicts"`
+		Extensions []reconciliationExtension `json:"extensions"`
+	}
+	if err := json.Unmarshal([]byte(reflectJSON), &parsed); err != nil {
+		return ""
+	}
+
+	var activeConflicts []reconciliationConflict
+	for _, c := range parsed.Conflicts {
+		if c.ConflictType == "superseded" || strings.TrimSpace(c.ExistingTuple) == "" {
+			continue
+		}
+		activeConflicts = append(activeConflicts, c)
+	}
+	var activeExtensions []reconciliationExtension
+	for _, e := range parsed.Extensions {
+		if strings.TrimSpace(e.ExistingTuple) == "" && strings.TrimSpace(e.Extension) == "" {
+			continue
+		}
+		activeExtensions = append(activeExtensions, e)
+	}
+
+	if len(activeConflicts) == 0 && len(activeExtensions) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteString("## Memory reconciliation\n\n")
+	if len(activeConflicts) > 0 {
+		b.WriteString("Conflicts (prompt overrides these memories):\n")
+		for _, c := range activeConflicts {
+			fmt.Fprintf(&b, "- [%s, conf %.2f] %q → %s\n",
+				c.ConflictType, c.Confidence, c.ExistingTuple, c.NewValue)
+		}
+		b.WriteString("\n")
+	}
+	if len(activeExtensions) > 0 {
+		b.WriteString("Extensions (prompt adds beyond memory):\n")
+		for _, e := range activeExtensions {
+			fmt.Fprintf(&b, "- on %q → %s\n", e.ExistingTuple, e.Extension)
+		}
+		b.WriteString("\n")
+	}
+	return b.String()
+}
 
 // executeViaClaude hands the user's prompt to claude --print --output-format stream-json
 // and captures the session ID, transcript, result, and file operations.
@@ -530,7 +611,8 @@ func executeViaClaude(userPrompt, reflectJSON string, filteredMemories []store.S
 		}
 	}
 
-	combined := fmt.Sprintf("%s\n\n%s%s%s## Reflect analysis\n\n%s", userPrompt, memSection.String(), anchorSection, gitSection.String(), reflectJSON)
+	reconSection := renderReconciliation(reflectJSON)
+	combined := fmt.Sprintf("%s\n\n%s%s%s%s", userPrompt, memSection.String(), anchorSection, gitSection.String(), reconSection)
 	start := time.Now()
 	result, err := runClaudePrint([]string{"--print", "--verbose", "--output-format", "stream-json", "--permission-mode", "acceptEdits", "--system-prompt", executeSystemPrompt, "--allowedTools", "Read,Write,Edit,Grep,Glob,Bash"}, combined)
 	if err == nil && result != nil {
