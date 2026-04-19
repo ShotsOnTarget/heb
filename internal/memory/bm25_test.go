@@ -104,6 +104,30 @@ func TestRecencyFactor_Values(t *testing.T) {
 	}
 }
 
+// TestBM25Rank_StemmingSymmetry proves the motivating case: a query with
+// the plural form "Interactions" matches a document containing the
+// singular "Interaction" (and vice versa). Without stemming, these miss
+// each other entirely; with symmetric Porter2 stemming inside Tokenize,
+// both collapse to the same stem and score normally.
+func TestBM25Rank_StemmingSymmetry(t *testing.T) {
+	docs := []Doc{
+		{Words: Tokenize("How the retrieve module tracks a single interaction"), Weight: 0},
+		{Words: Tokenize("Session bookkeeping stores totals"), Weight: 0},
+	}
+
+	// Plural query form should still match the singular doc.
+	resultsPlural := BM25Rank(docs, []string{"Interactions"})
+	if len(resultsPlural) != 1 || resultsPlural[0].Index != 0 {
+		t.Fatalf("plural 'Interactions' should match singular 'interaction' doc; got %+v", resultsPlural)
+	}
+
+	// Gerund / verb form should also match the nominal form.
+	resultsGerund := BM25Rank(docs, []string{"tracking"})
+	if len(resultsGerund) != 1 || resultsGerund[0].Index != 0 {
+		t.Fatalf("'tracking' should match doc containing 'tracks'; got %+v", resultsGerund)
+	}
+}
+
 func TestRecencyFactor_BandRange(t *testing.T) {
 	// Factor should always be in [(1-influence), 1.0].
 	lo := RecencyFactor(365 * 100) // very old

@@ -4,6 +4,8 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"strings"
+
+	"github.com/kljensen/snowball/english"
 )
 
 // Sep is the canonical tuple separator used throughout heb for display.
@@ -55,7 +57,10 @@ type Scored struct {
 //
 // Splits on: camelCase boundaries, digit/letter transitions, and any
 // non-alphanumeric character. Lowercases everything. Drops single-
-// character tokens as noise.
+// character tokens as noise. Applies Porter2 (Snowball English) stemming
+// to alphabetic tokens so morphological variants match symmetrically at
+// write and read time (e.g. "interaction" and "interactions" collapse
+// to the same stem). Pure-digit tokens pass through unchanged.
 func Tokenize(s string) []string {
 	// Split camelCase and digit/letter boundaries before lowercasing.
 	s = splitIdentifier(s)
@@ -72,9 +77,13 @@ func Tokenize(s string) []string {
 	}
 	var out []string
 	for _, w := range strings.Fields(b.String()) {
-		if len(w) > 1 {
-			out = append(out, w)
+		if len(w) <= 1 {
+			continue
 		}
+		if w[0] >= 'a' && w[0] <= 'z' {
+			w = english.Stem(w, true)
+		}
+		out = append(out, w)
 	}
 	if len(out) == 0 {
 		return nil

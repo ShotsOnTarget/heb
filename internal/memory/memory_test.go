@@ -17,37 +17,46 @@ func TestTokenize(t *testing.T) {
 		{"a b c", nil}, // all single chars
 
 		// Delimiter splitting (any non-alphanumeric)
-		{"heb_cli invoke_as bare_heb", []string{"heb", "cli", "invoke", "as", "bare", "heb"}},
-		{"internal/retrieve/", []string{"internal", "retrieve"}},
-		{"subject·predicate·object", []string{"subject", "predicate", "object"}},
+		{"heb_cli invoke_as bare_heb", []string{"heb", "cli", "invok", "as", "bare", "heb"}},
+		{"internal/retrieve/", []string{"intern", "retriev"}},
+		{"subject·predicate·object", []string{"subject", "predic", "object"}},
 		{"a-b.c/d_e", nil}, // all single chars after split
 
 		// Punctuation stripping
-		{"combat, state; rendering.", []string{"combat", "state", "rendering"}},
+		{"combat, state; rendering.", []string{"combat", "state", "render"}},
 		{"(foo) [bar] {baz}", []string{"foo", "bar", "baz"}},
 		{"it's a test", []string{"it", "test"}}, // apostrophe splits, single chars dropped
 
 		// CamelCase / PascalCase
 		{"CombatScreen", []string{"combat", "screen"}},
 		{"RunState", []string{"run", "state"}},
-		{"getHTTPResponse", []string{"get", "http", "response"}},
+		{"getHTTPResponse", []string{"get", "http", "respons"}},
 		{"XMLParser", []string{"xml", "parser"}},
 		{"myURLHandler", []string{"my", "url", "handler"}},
-		{"PlayerController rewrite", []string{"player", "controller", "rewrite"}},
+		{"PlayerController rewrite", []string{"player", "control", "rewrit"}},
 
 		// Digit boundaries
 		{"vec3", []string{"vec"}},           // "3" is single char, dropped
-		{"int32", []string{"int", "32"}},
-		{"player2controller", []string{"player", "controller"}}, // "2" dropped
-		{"BM25_IDF_memory", []string{"bm", "25", "idf", "memory"}},
+		{"int32", []string{"int", "32"}},    // digit-only tokens pass through stemmer untouched
+		{"player2controller", []string{"player", "control"}}, // "2" dropped
+		{"BM25_IDF_memory", []string{"bm", "25", "idf", "memori"}},
 
 		// Mixed real-world identifiers
 		{"forEach", []string{"for", "each"}},
 		{"useState", []string{"use", "state"}},
 		{"__init__", []string{"init"}},
-		{"$scope.apply()", []string{"scope", "apply"}},
+		{"$scope.apply()", []string{"scope", "appli"}},
 		{"@dataclass", []string{"dataclass"}},
 		{"std::vector<int>", []string{"std", "vector", "int"}},
+
+		// Stemming symmetry: morphological variants collapse to same stem.
+		// This is why stemming exists — "interaction" and "interactions"
+		// must match, as must "track/tracks/tracking", etc.
+		{"interaction", []string{"interact"}},
+		{"interactions", []string{"interact"}},
+		{"track tracks tracking tracked", []string{"track", "track", "track", "track"}},
+		{"run runs running", []string{"run", "run", "run"}},
+		{"memory memories", []string{"memori", "memori"}},
 	}
 	for _, tt := range tests {
 		got := Tokenize(tt.input)
@@ -101,17 +110,24 @@ func TestVerbosityCost(t *testing.T) {
 }
 
 func TestTokenizeEdgeCases(t *testing.T) {
-	// Middle dot is a delimiter
+	// Middle dot is a delimiter ("pipeline" stems to "pipelin")
 	got := Tokenize("heb_pipeline·must_not·stop")
-	want := []string{"heb", "pipeline", "must", "not", "stop"}
+	want := []string{"heb", "pipelin", "must", "not", "stop"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Tokenize middle-dot = %v, want %v", got, want)
 	}
 
-	// Slash is a delimiter
+	// Slash is a delimiter ("pipeline" stems to "pipelin")
 	got = Tokenize("cmd/heb/pipeline.go")
-	want = []string{"cmd", "heb", "pipeline", "go"}
+	want = []string{"cmd", "heb", "pipelin", "go"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Tokenize slash = %v, want %v", got, want)
+	}
+
+	// Pure-digit tokens pass through stemmer unchanged.
+	got = Tokenize("version 42 build 128")
+	want = []string{"version", "42", "build", "128"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Tokenize digit-tokens = %v, want %v", got, want)
 	}
 }
