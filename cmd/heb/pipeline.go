@@ -136,14 +136,162 @@ func resolveProvider() (string, string) {
 	return "", ""
 }
 
-// senseViaAnthropic calls the Anthropic Messages API directly with Haiku.
+// Default models used when the user hasn't picked a phase-specific model.
+const (
+	defaultAnthropicModel = "claude-haiku-4-5-20251001"
+	defaultOpenAIModel    = "gpt-4.1-mini"
+)
+
+// resolveModel determines which provider, API key, and model to use for a
+// given pipeline phase ("sense" or "reflect"). Honors `<phase>.model` config
+// values in the form "api:<provider>:<model>" or "cli:<tool>[:<model>]" when
+// set; otherwise falls back to resolveProvider() with the phase default.
+//
+// Provider values:
+//
+//	"anthropic"  — hit the Anthropic Messages API with apiKey/model.
+//	"openai"     — hit the OpenAI Chat Completions API with apiKey/model.
+//	"claude-cli" — spawn the claude CLI; model is the optional --model flag.
+//	""           — no provider usable (caller should error).
+func resolveModel(phase string) (provider, apiKey, model string) {
+	fallback := func() (string, string, string) {
+		p, k := resolveProvider()
+		switch p {
+		case "anthropic":
+			return "anthropic", k, defaultAnthropicModel
+		case "openai":
+			return "openai", k, defaultOpenAIModel
+		default:
+			return "claude-cli", "", ""
+		}
+	}
+
+	raw, _ := configLookup(phase+".model", false)
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return fallback()
+	}
+
+	parts := strings.SplitN(raw, ":", 3)
+	if len(parts) < 2 {
+		return fallback()
+	}
+
+	switch parts[0] {
+	case "api":
+		if len(parts) < 3 {
+			return fallback()
+		}
+		switch parts[1] {
+		case "anthropic":
+			if k, _ := configLookup("anthropic-key", false); k != "" {
+				return "anthropic", k, parts[2]
+			}
+		case "openai":
+			if k, _ := configLookup("openai-key", false); k != "" {
+				return "openai", k, parts[2]
+			}
+		}
+	case "cli":
+		cliModel := ""
+		if len(parts) >= 3 {
+			cliModel = parts[2]
+		}
+		switch parts[1] {
+		case "claude":
+			return "claude-cli", "", cliModel
+		case "gemini":
+			// Gemini CLI routing not implemented — fall back.
+			fmt.Fprintf(os.Stderr, "heb: %s.model=cli:gemini is not wired up yet; falling back\n", phase)
+		}
+	}
+
+	return fallback()
+}
+
+// apiUsage captures token counts reported by an LLM API call.
+type apiUsage struct {
+	In  int
+	Out int
+}
+
+// modelLabel produces a short human-readable name for a model. If model is
+// empty, the fallback is used verbatim; otherwise trailing dated suffixes
+// like "-20251001" are stripped so the GUI can show a clean name.
+func modelLabel(model, fallback string) string {
+	if model == "" {
+		model = fallback
+	}
+	// Strip a trailing date suffix (e.g. "claude-haiku-4-5-20251001" → "claude-haiku-4-5").
+	if i := strings.LastIndex(model, "-"); i > 0 {
+		tail := model[i+1:]
+		if len(tail) == 8 {
+			allDigits := true
+			for _, r := range tail {
+				if r < '0' || r > '9' {
+					allDigits = false
+					break
+				}
+			}
+			if allDigits {
+				model = model[:i]
+			}
+		}
+	}
+	return model
+}
+
+// emitStats writes a stats line to stderr for the GUI / log to pick up.
+// Format: "stats: <phase> in=<N> out=<N> ms=<N> [extra k=v ...]"
+func emitStats(phase string, u apiUsage, dur time.Duration, extras ...string) {
+	suffix := ""
+	if len(extras) > 0 {
+		suffix = " " + strings.Join(extras, " ")
+	}
+	fmt.Fprintf(os.Stderr, "stats: %s in=%d out=%d ms=%d%s\n",
+		phase, u.In, u.Out, dur.Milliseconds(), suffix)
+}
+
+// emitPrepareProgress streams the anchor-resolution result to stderr so the
+// GUI can render it as a "Prepare" chat entry between Predict and Claude.
+// Line shape mirrors recall: a header line plus one detail line per symbol.
+func emitPrepareProgress(anchors []retrieve.SymbolAnchors, dur time.Duration) {
+	hits, stale := 0, 0
+	for _, a := range anchors {
+		if a.NotFound {
+			stale++
+			continue
+		}
+		hits += len(a.Hits)
+	}
+	fmt.Fprintf(os.Stderr, "prepare: %d symbols, %d hits, %d stale\n", len(anchors), hits, stale)
+	for _, a := range anchors {
+		if a.NotFound {
+			fmt.Fprintf(os.Stderr, "prepare-stale: `%s`\n", a.Symbol)
+			continue
+		}
+		locs := make([]string, len(a.Hits))
+		for i, h := range a.Hits {
+			locs[i] = fmt.Sprintf("%s:%d", h.File, h.Line)
+		}
+		fmt.Fprintf(os.Stderr, "prepare-hit: `%s`: %s\n", a.Symbol, strings.Join(locs, ", "))
+	}
+	fmt.Fprintf(os.Stderr, "stats: prepare in=0 out=0 ms=%d symbols=%d hits=%d stale=%d\n",
+		dur.Milliseconds(), len(anchors), hits, stale)
+}
+
+// senseViaAnthropic calls the Anthropic Messages API.
+// model defaults to defaultAnthropicModel when empty.
 // maxTokens of 0 uses the default (512).
-func senseViaAnthropic(apiKey, systemPrompt, userPrompt string, maxTokens int) (string, error) {
+func senseViaAnthropic(apiKey, model, systemPrompt, userPrompt string, maxTokens int) (string, apiUsage, error) {
 	if maxTokens <= 0 {
 		maxTokens = 512
 	}
+	if model == "" {
+		model = defaultAnthropicModel
+	}
 	reqBody := map[string]any{
-		"model":      "claude-haiku-4-5-20251001",
+		"model":      model,
 		"max_tokens": maxTokens,
 		"system":     systemPrompt,
 		"messages": []map[string]string{
@@ -152,12 +300,12 @@ func senseViaAnthropic(apiKey, systemPrompt, userPrompt string, maxTokens int) (
 	}
 	body, err := json.Marshal(reqBody)
 	if err != nil {
-		return "", fmt.Errorf("marshal request: %w", err)
+		return "", apiUsage{}, fmt.Errorf("marshal request: %w", err)
 	}
 
 	req, err := http.NewRequest("POST", "https://api.anthropic.com/v1/messages", bytes.NewReader(body))
 	if err != nil {
-		return "", fmt.Errorf("create request: %w", err)
+		return "", apiUsage{}, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-API-Key", apiKey)
@@ -166,57 +314,76 @@ func senseViaAnthropic(apiKey, systemPrompt, userPrompt string, maxTokens int) (
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("api call: %w", err)
+		return "", apiUsage{}, fmt.Errorf("api call: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", fmt.Errorf("read response: %w", err)
+		return "", apiUsage{}, fmt.Errorf("read response: %w", err)
 	}
 
 	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("api returned %d: %s", resp.StatusCode, string(respBody))
+		return "", apiUsage{}, fmt.Errorf("api returned %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	var apiResp struct {
 		Content []struct {
 			Text string `json:"text"`
 		} `json:"content"`
+		Usage struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+		} `json:"usage"`
 	}
 	if err := json.Unmarshal(respBody, &apiResp); err != nil {
-		return "", fmt.Errorf("parse response: %w", err)
+		return "", apiUsage{}, fmt.Errorf("parse response: %w", err)
 	}
 	if len(apiResp.Content) == 0 {
-		return "", fmt.Errorf("empty response from api")
+		return "", apiUsage{}, fmt.Errorf("empty response from api")
 	}
 
-	return apiResp.Content[0].Text, nil
+	return apiResp.Content[0].Text, apiUsage{In: apiResp.Usage.InputTokens, Out: apiResp.Usage.OutputTokens}, nil
 }
 
-// senseViaOpenAI calls the OpenAI Chat Completions API with gpt-4.1-mini.
+// senseViaOpenAI calls the OpenAI Chat Completions API.
+// model defaults to defaultOpenAIModel when empty.
 // maxTokens of 0 uses the default (1024).
-func senseViaOpenAI(apiKey, systemPrompt, userPrompt string, maxTokens int) (string, error) {
+func senseViaOpenAI(apiKey, model, systemPrompt, userPrompt string, maxTokens int) (string, apiUsage, error) {
 	if maxTokens <= 0 {
 		maxTokens = 1024
 	}
+	if model == "" {
+		model = defaultOpenAIModel
+	}
+	// Reasoning-era models (o-series, gpt-5.x) require max_completion_tokens
+	// and reject temperature overrides.
+	isReasoning := strings.HasPrefix(model, "o") || strings.HasPrefix(model, "gpt-5")
+	systemRole := "system"
+	if isReasoning {
+		systemRole = "developer"
+	}
 	reqBody := map[string]any{
-		"model":       "gpt-4.1-mini",
-		"max_tokens":  maxTokens,
-		"temperature": 0,
+		"model": model,
 		"messages": []map[string]string{
-			{"role": "system", "content": systemPrompt},
+			{"role": systemRole, "content": systemPrompt},
 			{"role": "user", "content": userPrompt},
 		},
 	}
+	if isReasoning {
+		reqBody["max_completion_tokens"] = maxTokens
+	} else {
+		reqBody["max_tokens"] = maxTokens
+		reqBody["temperature"] = 0
+	}
 	body, err := json.Marshal(reqBody)
 	if err != nil {
-		return "", fmt.Errorf("marshal request: %w", err)
+		return "", apiUsage{}, fmt.Errorf("marshal request: %w", err)
 	}
 
 	req, err := http.NewRequest("POST", "https://api.openai.com/v1/chat/completions", bytes.NewReader(body))
 	if err != nil {
-		return "", fmt.Errorf("create request: %w", err)
+		return "", apiUsage{}, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
@@ -224,17 +391,17 @@ func senseViaOpenAI(apiKey, systemPrompt, userPrompt string, maxTokens int) (str
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("api call: %w", err)
+		return "", apiUsage{}, fmt.Errorf("api call: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", fmt.Errorf("read response: %w", err)
+		return "", apiUsage{}, fmt.Errorf("read response: %w", err)
 	}
 
 	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("api returned %d: %s", resp.StatusCode, string(respBody))
+		return "", apiUsage{}, fmt.Errorf("api returned %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	var apiResp struct {
@@ -243,15 +410,19 @@ func senseViaOpenAI(apiKey, systemPrompt, userPrompt string, maxTokens int) (str
 				Content string `json:"content"`
 			} `json:"message"`
 		} `json:"choices"`
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+		} `json:"usage"`
 	}
 	if err := json.Unmarshal(respBody, &apiResp); err != nil {
-		return "", fmt.Errorf("parse response: %w", err)
+		return "", apiUsage{}, fmt.Errorf("parse response: %w", err)
 	}
 	if len(apiResp.Choices) == 0 {
-		return "", fmt.Errorf("empty response from api")
+		return "", apiUsage{}, fmt.Errorf("empty response from api")
 	}
 
-	return apiResp.Choices[0].Message.Content, nil
+	return apiResp.Choices[0].Message.Content, apiUsage{In: apiResp.Usage.PromptTokens, Out: apiResp.Usage.CompletionTokens}, nil
 }
 
 // executeResult holds the parsed output from a claude --print run.
@@ -260,7 +431,9 @@ type executeResult struct {
 	ResultText      string   `json:"result_text"`
 	CostUSD         float64  `json:"cost_usd"`
 	NumTurns        int      `json:"num_turns"`
-	FullJSON        string   `json:"full_json"`      // raw output
+	InputTokens     int      `json:"input_tokens"`    // from final result.usage.input_tokens
+	OutputTokens    int      `json:"output_tokens"`   // from final result.usage.output_tokens
+	FullJSON        string   `json:"full_json"`       // raw output
 	FilesTouched    []string `json:"files_touched"`   // files edited/written (from tool_use)
 	FilesRead       []string `json:"files_read"`      // files read/grepped (from tool_use)
 }
@@ -271,7 +444,11 @@ Do not ask about things you can determine by reading the codebase. Only ask abou
 
 ## Session Context
 
-You receive **Active memories** (observations about the codebase) and a **Reflect analysis** (prediction with risk assessment) at conversation start.
+You receive four sections at conversation start:
+- **Active memories** — observations about the codebase.
+- **Symbol anchors** — identifiers from those memories pre-resolved to ` + "`file:line`" + `. Jump straight to these locations instead of re-grepping the symbols. Anchors listed under *Stale* had no hits in the current tree — treat the referencing memory as possibly outdated.
+- **Relevant git commits** — recent commits scored against the prompt. Use them for recency context (e.g. "X was refactored 2 days ago").
+- **Reflect analysis** — a prediction with risk assessment.
 
 Before executing any change:
 - Read the memories. They tell you how things are, not how they must be. If a requested change diverges from an observed pattern, that's worth mentioning — not blocking.
@@ -339,13 +516,41 @@ func executeViaClaude(userPrompt, reflectJSON string, filteredMemories []store.S
 		gitSection.WriteString("\n")
 	}
 
-	combined := fmt.Sprintf("%s\n\n%s%s## Reflect analysis\n\n%s", userPrompt, memSection.String(), gitSection.String(), reflectJSON)
-	return runClaudePrint([]string{"--print", "--verbose", "--output-format", "stream-json", "--system-prompt", executeSystemPrompt, "--allowedTools", "Read,Write,Edit,Grep,Glob,Bash"}, combined)
+	// Pre-resolve high-confidence identifiers from memories to file:line anchors.
+	// Saves early agent turns spent re-grepping symbols the memories already named.
+	// Stale symbols (no hits) are flagged so the agent treats the memory as possibly outdated.
+	var anchorSection string
+	if cwd, wdErr := os.Getwd(); wdErr == nil && len(filteredMemories) > 0 {
+		symbols := retrieve.ExtractIdentifiers(filteredMemories, 30)
+		if len(symbols) > 0 {
+			prepStart := time.Now()
+			anchors := retrieve.ResolveAnchors(cwd, symbols, 3)
+			emitPrepareProgress(anchors, time.Since(prepStart))
+			anchorSection = retrieve.FormatAnchorSection(anchors, 5)
+		}
+	}
+
+	combined := fmt.Sprintf("%s\n\n%s%s%s## Reflect analysis\n\n%s", userPrompt, memSection.String(), anchorSection, gitSection.String(), reflectJSON)
+	start := time.Now()
+	result, err := runClaudePrint([]string{"--print", "--verbose", "--output-format", "stream-json", "--permission-mode", "acceptEdits", "--system-prompt", executeSystemPrompt, "--allowedTools", "Read,Write,Edit,Grep,Glob,Bash"}, combined)
+	if err == nil && result != nil {
+		emitStats("execute", apiUsage{In: result.InputTokens, Out: result.OutputTokens}, time.Since(start),
+			fmt.Sprintf("turns=%d", result.NumTurns),
+			fmt.Sprintf("cost=$%.4f", result.CostUSD))
+	}
+	return result, err
 }
 
 // resumeViaClaude resumes an existing Claude session with a new prompt.
 func resumeViaClaude(claudeSessionID, userPrompt string) (*executeResult, error) {
-	return runClaudePrint([]string{"--print", "--verbose", "--output-format", "stream-json", "--allowedTools", "Read,Write,Edit,Grep,Glob,Bash", "--resume", claudeSessionID}, userPrompt)
+	start := time.Now()
+	result, err := runClaudePrint([]string{"--print", "--verbose", "--output-format", "stream-json", "--permission-mode", "acceptEdits", "--allowedTools", "Read,Write,Edit,Grep,Glob,Bash", "--resume", claudeSessionID}, userPrompt)
+	if err == nil && result != nil {
+		emitStats("execute", apiUsage{In: result.InputTokens, Out: result.OutputTokens}, time.Since(start),
+			fmt.Sprintf("turns=%d", result.NumTurns),
+			fmt.Sprintf("cost=$%.4f", result.CostUSD))
+	}
+	return result, err
 }
 
 // streamProgress controls whether runClaudePrint streams live tool-use
@@ -362,7 +567,7 @@ func runClaudePrint(claudeArgs []string, stdin string) (*executeResult, error) {
 	cmd.Env = filterEnv(os.Environ(), "CLAUDECODE")
 	cmd.Stdin = strings.NewReader(stdin)
 
-	fmt.Fprintln(os.Stderr, "executing...")
+	fmt.Fprintf(os.Stderr, "executing: %s\n", formatClaudeArgsForDisplay(claudeArgs))
 
 	if streamProgress {
 		return runClaudePrintStreaming(cmd)
@@ -581,6 +786,10 @@ func parseClaudeJSON(raw string) *executeResult {
 			Result    string  `json:"result"`
 			CostUSD   float64 `json:"total_cost_usd"`
 			NumTurns  int     `json:"num_turns"`
+			Usage     struct {
+				InputTokens  int `json:"input_tokens"`
+				OutputTokens int `json:"output_tokens"`
+			} `json:"usage"`
 			Message   *struct {
 				Content []struct {
 					Type  string `json:"type"`
@@ -607,6 +816,8 @@ func parseClaudeJSON(raw string) *executeResult {
 			result.ResultText = m.Result
 			result.CostUSD = m.CostUSD
 			result.NumTurns = m.NumTurns
+			result.InputTokens = m.Usage.InputTokens
+			result.OutputTokens = m.Usage.OutputTokens
 		} else if m.Type == "assistant" && m.Message != nil {
 			for _, c := range m.Message.Content {
 				if c.Type == "text" && result.ResultText == "" {
@@ -753,14 +964,17 @@ func runResume(args []string) int {
 }
 
 // senseViaClaude falls back to spawning claude --print.
-func senseViaClaude(cwd, systemPrompt, userPrompt string) (string, error) {
+func senseViaClaude(cwd, model, systemPrompt, userPrompt string) (string, apiUsage, error) {
 	claudeArgs := []string{
 		"--print",
 		"--no-session-persistence",
 		"--system-prompt", systemPrompt,
 		"--allowedTools", "",
-		"-p", userPrompt,
 	}
+	if model != "" {
+		claudeArgs = append(claudeArgs, "--model", model)
+	}
+	claudeArgs = append(claudeArgs, "-p", userPrompt)
 
 	cmd := exec.Command("claude", claudeArgs...)
 	cmd.Dir = cwd
@@ -770,10 +984,10 @@ func senseViaClaude(cwd, systemPrompt, userPrompt string) (string, error) {
 	cmd.Stdout = &stdout
 
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("claude --print: %w", err)
+		return "", apiUsage{}, fmt.Errorf("claude --print: %w", err)
 	}
 
-	return stdout.String(), nil
+	return stdout.String(), apiUsage{}, nil
 }
 
 // stripJSONFences removes ```json ... ``` wrapping if present.
@@ -812,11 +1026,15 @@ func resumeWithClarification(s *store.SQLiteStore, sessionID, senseJSON, reflect
 
 	fmt.Fprintln(os.Stderr, "executing...")
 
-	result, err := runClaudePrint([]string{"--print", "--verbose", "--output-format", "stream-json", "--system-prompt", executeSystemPrompt, "--allowedTools", "Read,Write,Edit,Grep,Glob,Bash"}, combined)
+	start := time.Now()
+	result, err := runClaudePrint([]string{"--print", "--verbose", "--output-format", "stream-json", "--permission-mode", "acceptEdits", "--system-prompt", executeSystemPrompt, "--allowedTools", "Read,Write,Edit,Grep,Glob,Bash"}, combined)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "heb: %v\n", err)
 		return 1
 	}
+	emitStats("execute", apiUsage{In: result.InputTokens, Out: result.OutputTokens}, time.Since(start),
+		fmt.Sprintf("turns=%d", result.NumTurns),
+		fmt.Sprintf("cost=$%.4f", result.CostUSD))
 
 	// Print the result text to stdout
 	if result.ResultText != "" {
@@ -906,6 +1124,29 @@ func mergeExecuteMeta(db *sql.DB, sessionID string, touched, read []string) {
 		"files_read":    allRead,
 	})
 	store.WriteContract(db, sessionID, "execute_meta", string(meta))
+}
+
+// formatClaudeArgsForDisplay renders claude argv for GUI/log visibility,
+// eliding long flag values (e.g. --system-prompt) so the line stays readable.
+func formatClaudeArgsForDisplay(args []string) string {
+	out := []string{"claude"}
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		out = append(out, a)
+		if strings.HasPrefix(a, "--") && i+1 < len(args) && !strings.HasPrefix(args[i+1], "--") {
+			v := args[i+1]
+			if len(v) > 80 {
+				v = fmt.Sprintf("<%d bytes>", len(v))
+			} else if strings.ContainsAny(v, " \t\"") {
+				v = fmt.Sprintf("%q", v)
+			} else if v == "" {
+				v = `""`
+			}
+			out = append(out, v)
+			i++
+		}
+	}
+	return strings.Join(out, " ")
 }
 
 // filterEnv returns a copy of env with the named variable removed.

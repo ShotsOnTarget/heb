@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -70,26 +69,33 @@ func doSense(prompt string) (*senseResult, string, error) {
 	if err != nil {
 		return nil, "", fmt.Errorf("getwd: %w", err)
 	}
-	project := filepath.Base(cwd)
+	project, err := store.ProjectID()
+	if err != nil {
+		return nil, "", fmt.Errorf("project id: %w", err)
+	}
 	sessionID := time.Now().UTC().Format("2006-01-02T15:04:05Z")
 
 	systemPrompt := senseSystemPrompt
 	systemPrompt = strings.ReplaceAll(systemPrompt, "<PROJECT>", project)
 	systemPrompt = strings.ReplaceAll(systemPrompt, "<SESSION_ID>", sessionID)
 
-	fmt.Fprintf(os.Stderr, "sensing: %s\n", prompt)
-
-	// Call LLM: config > env var > claude --print
+	// Call LLM: honor sense.model config, then fall back to auto-detected provider.
 	var raw string
-	provider, apiKey := resolveProvider()
+	var usage apiUsage
+	provider, apiKey, model := resolveModel("sense")
+	start := time.Now()
 	switch provider {
 	case "anthropic":
-		raw, err = senseViaAnthropic(apiKey, systemPrompt, prompt, 0)
+		fmt.Fprintf(os.Stderr, "sensing [%s]: %s\n", modelLabel(model, defaultAnthropicModel), prompt)
+		raw, usage, err = senseViaAnthropic(apiKey, model, systemPrompt, prompt, 0)
 	case "openai":
-		raw, err = senseViaOpenAI(apiKey, systemPrompt, prompt, 0)
+		fmt.Fprintf(os.Stderr, "sensing [%s]: %s\n", modelLabel(model, defaultOpenAIModel), prompt)
+		raw, usage, err = senseViaOpenAI(apiKey, model, systemPrompt, prompt, 0)
 	default:
-		raw, err = senseViaClaude(cwd, systemPrompt, prompt)
+		fmt.Fprintf(os.Stderr, "sensing [%s]: %s\n", modelLabel(model, "claude"), prompt)
+		raw, usage, err = senseViaClaude(cwd, model, systemPrompt, prompt)
 	}
+	elapsed := time.Since(start)
 	if err != nil {
 		if strings.Contains(err.Error(), "credit balance") || strings.Contains(err.Error(), "billing") {
 			if provider == "openai" {
@@ -114,38 +120,22 @@ func doSense(prompt string) (*senseResult, string, error) {
 	corrected, _ := json.Marshal(sense)
 	raw = string(corrected)
 
-	// Display
-	fmt.Fprintln(os.Stderr, "SENSE RESULT")
-	fmt.Fprintln(os.Stderr, "────────────────────────────────────────")
-	fmt.Fprintf(os.Stderr, "session_id:  %s\n", sense.SessionID)
-	fmt.Fprintf(os.Stderr, "project:     %s\n", sense.Project)
+	// Display tokens on the sense line so the GUI can show them
 	tokens := "—"
 	if len(sense.Tokens) > 0 {
 		tokens = strings.Join(sense.Tokens, ", ")
 	}
-	fmt.Fprintf(os.Stderr, "tokens:      %s\n", tokens)
-	fmt.Fprintf(os.Stderr, "raw:         %q\n", sense.Raw)
-	switch provider {
-	case "anthropic":
-		fmt.Fprintf(os.Stderr, "via:         anthropic api (haiku)\n")
-	case "openai":
-		fmt.Fprintf(os.Stderr, "via:         openai api (gpt-4.1-mini)\n")
-	default:
-		fmt.Fprintf(os.Stderr, "via:         claude --print\n")
-	}
-	fmt.Fprintln(os.Stderr, "────────────────────────────────────────")
+	fmt.Fprintf(os.Stderr, "sensing tokens: %s\n", tokens)
+	emitStats("sense", usage, elapsed)
 
 	// Persist to session (best-effort)
-	root, err := store.RepoRoot()
+	s, err := store.OpenOrInit()
 	if err == nil {
-		s, err := store.Open(root)
-		if err == nil {
-			defer s.Close()
-			if err := store.StartSession(s.DB(), sense.SessionID, sense.Project, raw); err != nil {
-				fmt.Fprintf(os.Stderr, "heb: session start: %v\n", err)
-			} else {
-				fmt.Fprintf(os.Stderr, "session started: %s\n", sense.SessionID)
-			}
+		defer s.Close()
+		if err := store.StartSession(s.DB(), sense.SessionID, sense.Project, raw); err != nil {
+			fmt.Fprintf(os.Stderr, "heb: session start: %v\n", err)
+		} else {
+			fmt.Fprintf(os.Stderr, "session started: %s\n", sense.SessionID)
 		}
 	}
 

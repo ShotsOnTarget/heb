@@ -9,15 +9,16 @@ import (
 // Result is the full retrieve output: the data backing both Block 1
 // (human-readable) and Block 2 (contract:recall>reflect JSON).
 type Result struct {
-	SessionID      string         `json:"session_id"`
-	Project        string         `json:"project"`
-	TokenBudget    int            `json:"token_budget"`
-	TokensUsed     int            `json:"tokens_used"`
-	GitTokenBudget int            `json:"git_token_budget"`
-	GitTokensUsed  int            `json:"git_tokens_used"`
-	Memories       []store.Scored `json:"memories"`
-	GitRefs        []GitRef       `json:"git_refs"`
-	Beads          []BeadRef      `json:"beads"`
+	SessionID        string         `json:"session_id"`
+	Project          string         `json:"project"`
+	TokenBudget      int            `json:"token_budget"`
+	TokensUsed       int            `json:"tokens_used"`
+	GitTokenBudget   int            `json:"git_token_budget"`
+	GitTokensUsed    int            `json:"git_tokens_used"`
+	Memories         []store.Scored `json:"memories"`
+	MaxPossibleScore float64        `json:"-"` // set by caller; used to normalise Score → band label
+	GitRefs          []GitRef       `json:"git_refs"`
+	Beads            []BeadRef      `json:"beads"`
 }
 
 // isHardConstraint reports whether a memory is pinned:
@@ -46,10 +47,42 @@ func gitRefTokens(ref GitRef) int {
 	return charsToTokens(len(line))
 }
 
-// trimToBudget caps git refs to their token budget via metabolic cost,
-// caps beads refs, then measures final token usage.
-// Memory trimming is handled by Recall() itself (hard cap at RecallLimit=16).
+// memoryTokens returns the approximate token cost of a single memory
+// as it would appear in the human-rendered block.
+func memoryTokens(m store.Scored) int {
+	// Format: "  [match 0.85] body text +1.50 (3d ago)\n"
+	line := fmt.Sprintf("  [match %.2f] %s +%.2f (0d ago)\n", m.Score, m.Body, m.Weight)
+	return charsToTokens(len(line))
+}
+
+// trimToBudget caps memories, git refs, and beads to their respective
+// token budgets, then measures final token usage.
 func trimToBudget(r *Result, cfg Config, measure measureFunc) {
+	// Trim memories to their token budget, dropping lowest-scored first.
+	// Hard constraints (body starting with "!") are never dropped.
+	memBudget := cfg.TokenBudget
+	if memBudget <= 0 {
+		memBudget = 300
+	}
+	var memUsed int
+	kept := make([]store.Scored, 0, len(r.Memories))
+	// Memories arrive sorted by score descending from Recall().
+	// Walk forward, accumulating cost; drop once over budget (unless pinned).
+	for _, m := range r.Memories {
+		cost := memoryTokens(m)
+		if isHardConstraint(m) {
+			kept = append(kept, m)
+			memUsed += cost
+			continue
+		}
+		if memUsed+cost > memBudget {
+			continue // drop — over budget
+		}
+		kept = append(kept, m)
+		memUsed += cost
+	}
+	r.Memories = kept
+
 	// Trim git refs to their own token budget.
 	gitBudget := cfg.GitTokenBudget
 	if gitBudget <= 0 {

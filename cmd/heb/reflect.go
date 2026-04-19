@@ -224,25 +224,29 @@ func doReflect(sense *senseResult, ret *retrieve.Result) (*reflectResult, string
 
 	systemPrompt := strings.ReplaceAll(reflectSystemPrompt, "<SESSION_ID>", sense.SessionID)
 
-	// Call LLM
+	// Call LLM: honor reflect.model config, then fall back to auto-detected provider.
 	var raw string
+	var usage apiUsage
 	var err error
-	provider, apiKey := resolveProvider()
+	provider, apiKey, model := resolveModel("reflect")
+	start := time.Now()
 	switch provider {
 	case "anthropic":
-		fmt.Fprintf(os.Stderr, "reflecting [haiku]...\n")
-		raw, err = senseViaAnthropic(apiKey, systemPrompt, userPrompt.String(), 2048)
+		fmt.Fprintf(os.Stderr, "reflecting [%s]...\n", modelLabel(model, defaultAnthropicModel))
+		raw, usage, err = senseViaAnthropic(apiKey, model, systemPrompt, userPrompt.String(), 2048)
 	case "openai":
-		fmt.Fprintf(os.Stderr, "reflecting [gpt-4.1-mini]...\n")
-		raw, err = senseViaOpenAI(apiKey, systemPrompt, userPrompt.String(), 2048)
+		fmt.Fprintf(os.Stderr, "reflecting [%s]...\n", modelLabel(model, defaultOpenAIModel))
+		raw, usage, err = senseViaOpenAI(apiKey, model, systemPrompt, userPrompt.String(), 2048)
 	default:
-		fmt.Fprintf(os.Stderr, "reflecting [claude]...\n")
+		fmt.Fprintf(os.Stderr, "reflecting [%s]...\n", modelLabel(model, "claude"))
 		cwd, _ := os.Getwd()
-		raw, err = senseViaClaude(cwd, systemPrompt, userPrompt.String())
+		raw, usage, err = senseViaClaude(cwd, model, systemPrompt, userPrompt.String())
 	}
+	elapsed := time.Since(start)
 	if err != nil {
 		return nil, "", fmt.Errorf("reflect: %w", err)
 	}
+	emitStats("reflect", usage, elapsed)
 
 	raw = stripJSONFences(strings.TrimSpace(raw))
 

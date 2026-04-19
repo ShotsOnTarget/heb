@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/steelboltgames/heb/internal/retrieve"
 	"github.com/steelboltgames/heb/internal/store"
@@ -18,16 +19,36 @@ func doRetrieve(sense *senseResult) (*retrieve.Result, string, error) {
 	// and strip leading dashes so retrieval gets maximum substring coverage.
 	tokens := splitTokens(sense.Tokens)
 
-	memories := resolveMemories(tokens, cfg.MemoryLimit, sense.Project)
+	memories, maxScore := resolveMemories(tokens, cfg.MemoryLimit, sense.Project)
 
 	result := retrieve.Run(retrieve.Input{
 		SessionID: sense.SessionID,
 		Project:   sense.Project,
 		Tokens:    tokens,
 	}, memories, retrieve.ExecRunner{}, cfg)
+	result.MaxPossibleScore = maxScore
 
-	// Display
-	fmt.Fprintln(os.Stderr, retrieve.RenderHuman(result))
+	// Emit summary + detail lines to stderr for the GUI
+	fmt.Fprintf(os.Stderr, "recall: %d memories (%d/%d tok), %d git (%d/%d tok), %d beads\n",
+		len(result.Memories), result.TokensUsed, result.TokenBudget,
+		len(result.GitRefs), result.GitTokensUsed, result.GitTokenBudget,
+		len(result.Beads))
+
+	now := time.Now().Unix()
+	for _, m := range result.Memories {
+		age := int((now - m.UpdatedAt) / 86400)
+		if age < 0 {
+			age = 0
+		}
+		tag := "match"
+		if m.Source == "edge" {
+			tag = "edge"
+		}
+		fmt.Fprintf(os.Stderr, "recall-mem: [%s %.2f] %s +%.2f (%dd)\n", tag, m.Score, m.Body, m.Weight, age)
+	}
+	for _, g := range result.GitRefs {
+		fmt.Fprintf(os.Stderr, "recall-git: [%.2f] %s %s (%dd)\n", g.Score, g.Hash, g.Message, int(g.AgeDays))
+	}
 
 	// Persist to session (best-effort)
 	jsonOut := retrieve.RenderJSON(result)
@@ -40,11 +61,6 @@ func doRetrieve(sense *senseResult) (*retrieve.Result, string, error) {
 			}
 		}
 	}
-
-	fmt.Fprintf(os.Stderr, "recall: %d memories (%d/%d tok), %d git (%d/%d tok), %d beads\n",
-		len(result.Memories), result.TokensUsed, result.TokenBudget,
-		len(result.GitRefs), result.GitTokensUsed, result.GitTokenBudget,
-		len(result.Beads))
 
 	return result, jsonOut, nil
 }

@@ -48,11 +48,34 @@ func (s *SQLiteStore) SchemaVersion() int {
 // import this package so this is safe.
 func (s *SQLiteStore) DB() *sql.DB { return s.db }
 
-// HebDir returns the .heb directory path for the given repo root.
-func HebDir(repoRoot string) string { return filepath.Join(repoRoot, ".heb") }
+// HebDir returns the global .heb directory path (~/.heb).
+func HebDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("home dir: %w", err)
+	}
+	return filepath.Join(home, ".heb"), nil
+}
 
-// DBPath returns the SQLite database path for the given repo root.
-func DBPath(repoRoot string) string { return filepath.Join(HebDir(repoRoot), "memory.db") }
+// DBPath returns the global SQLite database path (~/.heb/memory.db).
+func DBPath() (string, error) {
+	dir, err := HebDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "memory.db"), nil
+}
+
+// ProjectID returns a stable project identifier for the current directory.
+// Uses the git repo root if in a git repo, otherwise the current working directory.
+// Normalised to forward slashes for cross-platform consistency.
+func ProjectID() (string, error) {
+	root, err := RepoRoot()
+	if err != nil {
+		return "", err
+	}
+	return filepath.ToSlash(root), nil
+}
 
 // RepoRoot resolves the repository root by asking git. Falls back to
 // the current working directory if not inside a git repo.
@@ -64,13 +87,18 @@ func RepoRoot() (string, error) {
 	return os.Getwd()
 }
 
-// Init creates .heb/ and the SQLite database if they do not exist,
-// applies the schema, and writes meta rows. Idempotent: re-running on
-// an already-initialised repo is a no-op that returns the existing
-// store opened read/write.
-func Init(repoRoot string) (*SQLiteStore, bool, error) {
-	dir := HebDir(repoRoot)
-	dbPath := DBPath(repoRoot)
+// Init creates ~/.heb/ and the SQLite database if they do not exist,
+// applies the schema, and writes meta rows. Idempotent: re-running is
+// a no-op that returns the existing store opened read/write.
+func Init() (*SQLiteStore, bool, error) {
+	dir, err := HebDir()
+	if err != nil {
+		return nil, false, err
+	}
+	dbPath, err := DBPath()
+	if err != nil {
+		return nil, false, err
+	}
 
 	created := false
 	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
@@ -87,7 +115,7 @@ func Init(repoRoot string) (*SQLiteStore, bool, error) {
 	if err != nil {
 		return nil, false, fmt.Errorf("open %s: %w", dbPath, err)
 	}
-	if _, err := db.Exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;`); err != nil {
+	if _, err := db.Exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;`); err != nil {
 		db.Close()
 		return nil, false, fmt.Errorf("pragmas: %w", err)
 	}
@@ -110,17 +138,20 @@ func Init(repoRoot string) (*SQLiteStore, bool, error) {
 	return &SQLiteStore{db: db, path: dbPath}, created, nil
 }
 
-// Open opens an existing store. Errors if the db does not exist.
-func Open(repoRoot string) (*SQLiteStore, error) {
-	dbPath := DBPath(repoRoot)
+// Open opens the global store at ~/.heb/memory.db. Errors if the db does not exist.
+func Open() (*SQLiteStore, error) {
+	dbPath, err := DBPath()
+	if err != nil {
+		return nil, err
+	}
 	if _, err := os.Stat(dbPath); err != nil {
-		return nil, fmt.Errorf("heb not initialised at %s: run 'heb init'", repoRoot)
+		return nil, fmt.Errorf("heb not initialised: run 'heb init'")
 	}
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", dbPath, err)
 	}
-	if _, err := db.Exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;`); err != nil {
+	if _, err := db.Exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;`); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -180,42 +211,17 @@ func Open(repoRoot string) (*SQLiteStore, error) {
 // Path returns the on-disk path of the SQLite database.
 func (s *SQLiteStore) Path() string { return s.path }
 
-// GlobalRoot returns the path to the global heb directory (~/.heb).
-func GlobalRoot() (string, error) {
-	home, err := os.UserHomeDir()
+// OpenOrInit opens the global store, creating it if it doesn't exist.
+// Convenience wrapper for callers that don't care about first-init semantics.
+func OpenOrInit() (*SQLiteStore, error) {
+	s, err := Open()
 	if err != nil {
-		return "", fmt.Errorf("home dir: %w", err)
+		s, _, err = Init()
+		if err != nil {
+			return nil, err
+		}
 	}
-	return filepath.Join(home, ".heb"), nil
-}
-
-// OpenGlobal opens (or creates) the global ~/.heb/memory.db store.
-func OpenGlobal() (*SQLiteStore, error) {
-	dir, err := GlobalRoot()
-	if err != nil {
-		return nil, err
-	}
-	dbPath := filepath.Join(dir, "memory.db")
-
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, fmt.Errorf("mkdir %s: %w", dir, err)
-	}
-
-	db, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		return nil, fmt.Errorf("open %s: %w", dbPath, err)
-	}
-	if _, err := db.Exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;`); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("pragmas: %w", err)
-	}
-	// Only create the meta table — global store only needs config.
-	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("schema: %w", err)
-	}
-
-	return &SQLiteStore{db: db, path: dbPath}, nil
+	return s, nil
 }
 
 const schemaSQL = `
@@ -318,5 +324,22 @@ CREATE TABLE IF NOT EXISTS transcript_log (
 );
 CREATE INDEX IF NOT EXISTS idx_transcript_log_session ON transcript_log(session_id);
 CREATE INDEX IF NOT EXISTS idx_transcript_log_claude  ON transcript_log(claude_session_id);
+
+CREATE TABLE IF NOT EXISTS projects (
+    path         TEXT PRIMARY KEY,
+    name         TEXT NOT NULL,
+    created_at   INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS gui_chat_log (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id   TEXT NOT NULL,
+    role         TEXT NOT NULL,
+    content      TEXT NOT NULL,
+    phase        TEXT,
+    created_at   INTEGER NOT NULL,
+    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_gui_chat_session ON gui_chat_log(session_id);
 
 `

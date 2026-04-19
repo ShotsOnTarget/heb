@@ -120,11 +120,7 @@ func runRawPayload(data []byte) (consolidate.Result, error) {
 func applyPayload(result *consolidate.Result, lr *consolidate.LearnResult, cfg *consolidate.Config) error {
 	p := result.Payload
 
-	root, err := store.RepoRoot()
-	if err != nil {
-		return err
-	}
-	s, err := store.Open(root)
+	s, err := store.Open()
 	if err != nil {
 		return err
 	}
@@ -151,6 +147,10 @@ func applyPayload(result *consolidate.Result, lr *consolidate.LearnResult, cfg *
 	}
 	if lr!= nil && cfg != nil {
 		if err := applyEdgeDecay(tx, s.DB(), lr, cfg, result); err != nil {
+			tx.Rollback()
+			return err
+		}
+		if err := applyPredictionEvents(tx, lr, result); err != nil {
 			tx.Rollback()
 			return err
 		}
@@ -223,8 +223,11 @@ func applyEpisode(tx *sql.Tx, p consolidate.Payload, result *consolidate.Result)
 // applyEdgeDecay weakens edges via two paths:
 //
 //  1. Unconfirmed recall: edges that fired via spreading activation but
-//     whose target memories were not confirmed by a lesson. Only runs
-//     for act sessions (files_touched > 0 or correction_count > 0).
+//     whose target memories were not attested as useful by /learn. Claude
+//     must list confirmed tuples in the confirmed_recalls field (verbatim
+//     copies from recalled_via_edges); anything not listed is treated as
+//     unconfirmed. Only runs for act sessions (files_touched > 0 or
+//     correction_count > 0).
 //
 //  2. Prediction contradiction: edges whose source tuples contributed to
 //     a prediction that was wrong. Runs regardless of session type —
@@ -244,13 +247,13 @@ func applyEdgeDecay(tx *sql.Tx, db *sql.DB, lr *consolidate.LearnResult, cfg *co
 	if len(lr.RecalledViaEdges) > 0 && result.ThresholdMet &&
 		(len(lr.Implementation.FilesTouched) > 0 || lr.CorrectionCount > 0) {
 
-		writtenSet := make(map[string]bool, len(lr.Lessons))
-		for _, l := range lr.Lessons {
-			writtenSet[l.Body] = true
+		confirmedSet := make(map[string]bool, len(lr.ConfirmedRecalls))
+		for _, t := range lr.ConfirmedRecalls {
+			confirmedSet[t] = true
 		}
 
 		for _, tuple := range lr.RecalledViaEdges {
-			if writtenSet[tuple] {
+			if confirmedSet[tuple] {
 				continue
 			}
 			decayEdgesForTuple(tx, db, tuple, -cfg.EdgeDecayRate, cfg.EdgeEstablishThreshold, decayed, result)
@@ -280,6 +283,59 @@ func applyEdgeDecay(tx *sql.Tx, db *sql.DB, lr *consolidate.LearnResult, cfg *co
 		}
 	}
 
+	return nil
+}
+
+// applyPredictionEvents writes audit event rows for every
+// prediction_confirmed / prediction_contradicted source_tuple that
+// resolves to an existing memory. Delta is zero — Phase 1 only
+// validates the parse path; weight deltas land in a later change.
+//
+// source_tuples that don't resolve to an existing memory are counted as
+// orphans and skipped (reflect sometimes emits bodies that never made
+// it into the graph, usually because they were long-form
+// paraphrases rather than verbatim copies).
+func applyPredictionEvents(tx *sql.Tx, lr *consolidate.LearnResult, result *consolidate.Result) error {
+	pr := lr.PredictionReconciliation
+	if pr == nil || pr.ColdStart {
+		return nil
+	}
+
+	commitHash := result.Payload.CommitHash
+	sessionID := result.Payload.SessionID
+	beadID := result.Payload.BeadID
+
+	for _, elem := range pr.Elements {
+		if elem.Event == "" {
+			continue
+		}
+		for _, tuple := range elem.SourceTuples {
+			id := tupleToMemoryID(tuple)
+			if id == "" {
+				continue
+			}
+			exists, err := store.MemoryExists(tx, id)
+			if err != nil {
+				result.Errors = append(result.Errors, fmt.Sprintf("prediction-event exists check %s: %v", tuple, err))
+				continue
+			}
+			if !exists {
+				result.PredictionsOrphaned++
+				continue
+			}
+			reason := fmt.Sprintf("%s: %s", elem.Event, elem.Element)
+			if err := store.AppendEvent(tx, id, elem.Event, reason, sessionID, beadID, commitHash, 0); err != nil {
+				result.Errors = append(result.Errors, fmt.Sprintf("prediction-event %s: %v", tuple, err))
+				continue
+			}
+			switch elem.Event {
+			case "prediction_confirmed":
+				result.PredictionsConfirmed++
+			case "prediction_contradicted":
+				result.PredictionsContradicted++
+			}
+		}
+	}
 	return nil
 }
 

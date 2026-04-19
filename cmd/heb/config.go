@@ -13,7 +13,9 @@ var validConfigs = map[string][]string{
 	"provider":      {"anthropic", "openai"},
 	"anthropic-key": nil, // freeform
 	"openai-key":    nil, // freeform
-	"learn.model":   nil, // freeform — e.g. "opus", "sonnet", "claude-opus-4-6"
+	"sense.model":   nil, // freeform — e.g. "", "api:anthropic:claude-haiku-4-5", "cli:claude:sonnet-4-6"
+	"reflect.model": nil, // freeform — same scheme as sense.model
+	"learn.model":   nil, // freeform — e.g. "resume", "gpt-5.4", "gpt-4.1-mini"
 }
 
 var configDefaults = map[string]string{
@@ -21,7 +23,9 @@ var configDefaults = map[string]string{
 	"provider":      "anthropic",
 	"anthropic-key": "",
 	"openai-key":    "",
-	"learn.model":   "",
+	"sense.model":   "",
+	"reflect.model": "",
+	"learn.model":   "resume",
 }
 
 // globalConfigKeys are keys that make sense at the global (~/.heb) level.
@@ -29,6 +33,8 @@ var globalConfigKeys = map[string]bool{
 	"provider":      true,
 	"anthropic-key": true,
 	"openai-key":    true,
+	"sense.model":   true,
+	"reflect.model": true,
 	"learn.model":   true,
 }
 
@@ -103,26 +109,12 @@ func configGet(args []string) int {
 	return 0
 }
 
-// configLookup resolves a config value with cascade: project → global → env → default.
-// If global is true, only checks global store.
-// Returns the value and a source label.
+// configLookup resolves a config value with cascade: store → env → default.
+// The globalOnly parameter is kept for API compatibility but has no effect
+// since all config now lives in the single global store.
 func configLookup(key string, globalOnly bool) (string, string) {
-	if !globalOnly {
-		// Try project-local store first
-		root, err := store.RepoRoot()
-		if err == nil {
-			s, err := store.Open(root)
-			if err == nil {
-				defer s.Close()
-				if val, err := store.ConfigGet(s.DB(), key); err == nil {
-					return val, "project"
-				}
-			}
-		}
-	}
-
 	// Try global store
-	gs, err := store.OpenGlobal()
+	gs, err := store.OpenOrInit()
 	if err == nil {
 		defer gs.Close()
 		if val, err := store.ConfigGet(gs.DB(), key); err == nil {
@@ -177,22 +169,8 @@ func configSet(args []string) int {
 		global = true
 	}
 
-	var s *store.SQLiteStore
-	var label string
-	var err error
-
-	if global {
-		s, err = store.OpenGlobal()
-		label = "global"
-	} else {
-		root, rerr := store.RepoRoot()
-		if rerr != nil {
-			fmt.Fprintf(os.Stderr, "heb config set: %v\n", rerr)
-			return 1
-		}
-		s, err = store.Open(root)
-		label = "project"
-	}
+	label := "global"
+	s, err := store.OpenOrInit()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "heb config set: %v\n", err)
 		return 1

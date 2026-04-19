@@ -77,8 +77,30 @@ func TestTrimCapsBeads(t *testing.T) {
 	}
 }
 
-func TestTrimPreservesMemoriesUntouched(t *testing.T) {
+func TestTrimMemoriesToBudget(t *testing.T) {
 	cfg := DefaultConfig()
+	cfg.TokenBudget = 30 // very tight — should drop some memories
+	r := &Result{
+		Memories: []store.Scored{
+			mkMem("high score memory with some text", 0.9, "match"),
+			mkMem("medium score memory with text", 0.5, "match"),
+			mkMem("low score memory with more text here", 0.2, "edge"),
+		},
+	}
+	trimToBudget(r, cfg, fakeMeasure)
+	// With a 30-token budget, not all 3 should fit
+	if len(r.Memories) >= 3 {
+		t.Errorf("memories = %d, want < 3 (budget should trim)", len(r.Memories))
+	}
+	// Highest-scored should be kept
+	if len(r.Memories) > 0 && r.Memories[0].Score != 0.9 {
+		t.Errorf("first memory score = %.2f, want 0.9 (highest first)", r.Memories[0].Score)
+	}
+}
+
+func TestTrimMemoriesWithinBudgetPreserved(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.TokenBudget = 2000 // generous budget — all should fit
 	r := &Result{
 		Memories: []store.Scored{
 			mkMem("a", 0.5, "match"),
@@ -87,9 +109,8 @@ func TestTrimPreservesMemoriesUntouched(t *testing.T) {
 		},
 	}
 	trimToBudget(r, cfg, fakeMeasure)
-	// trimToBudget no longer touches memories — that's Recall's job.
 	if len(r.Memories) != 3 {
-		t.Errorf("memories = %d, want 3 (untouched)", len(r.Memories))
+		t.Errorf("memories = %d, want 3 (all within budget)", len(r.Memories))
 	}
 }
 
@@ -108,23 +129,23 @@ func TestTrimSetsGitBudgetFields(t *testing.T) {
 	}
 }
 
-func TestTrimPreservesHardConstraint(t *testing.T) {
+func TestTrimPreservesHardConstraintEvenOverBudget(t *testing.T) {
 	cfg := DefaultConfig()
+	cfg.TokenBudget = 1 // absurdly tight — but pinned memories must survive
 	r := &Result{
 		Memories: []store.Scored{
-			mkMem("!pinned", 0.5, "match"),
-			mkMem("normal", 0.9, "match"),
+			mkMem("!pinned rule", 0.5, "match"),
+			mkMem("normal memory", 0.9, "match"),
 		},
 	}
 	trimToBudget(r, cfg, fakeMeasure)
-	// All memories preserved (trimming is Recall's job now).
 	foundPinned := false
 	for _, m := range r.Memories {
-		if m.Body == "!pinned" {
+		if m.Body == "!pinned rule" {
 			foundPinned = true
 		}
 	}
 	if !foundPinned {
-		t.Errorf("hard constraint '!pinned' missing")
+		t.Errorf("hard constraint '!pinned rule' was dropped — must be preserved")
 	}
 }

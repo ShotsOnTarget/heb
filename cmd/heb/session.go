@@ -13,7 +13,7 @@ import (
 
 func runSession(args []string) int {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: heb session <start|write|read|list|resume|close> [args]")
+		fmt.Fprintln(os.Stderr, "usage: heb session <start|write|read|list|resume|close|trash> [args]")
 		return 2
 	}
 	switch args[0] {
@@ -29,6 +29,12 @@ func runSession(args []string) int {
 		return runSessionResume(args[1:])
 	case "close":
 		return runSessionClose(args[1:])
+	case "trash":
+		return runSessionTrash(args[1:])
+	case "chat-save":
+		return runSessionChatSave(args[1:])
+	case "chat-list":
+		return runSessionChatList(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "heb session: unknown subcommand %q\n", args[0])
 		return 2
@@ -263,11 +269,114 @@ func runSessionClose(args []string) int {
 	return 0
 }
 
-// openStore is a shared helper for session commands.
-func openStore() (*store.SQLiteStore, error) {
-	root, err := store.RepoRoot()
-	if err != nil {
-		return nil, err
+// runSessionTrash discards a session without learning.
+// Usage: heb session trash <session_id>
+func runSessionTrash(args []string) int {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "usage: heb session trash <session_id>")
+		return 2
 	}
-	return store.Open(root)
+	sessionID := args[0]
+
+	s, err := openStore()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "heb session trash: %v\n", err)
+		return 1
+	}
+	defer s.Close()
+
+	if err := store.TrashSession(s.DB(), sessionID); err != nil {
+		fmt.Fprintf(os.Stderr, "heb session trash: %v\n", err)
+		return 1
+	}
+
+	fmt.Fprintf(os.Stderr, "session trashed: %s\n", sessionID)
+	return 0
+}
+
+// runSessionChatSave clears and re-writes all GUI chat messages for a session.
+// Usage: heb session chat-save <session_id>
+// Reads JSON array from stdin: [{"role":"...", "content":"...", "phase":"..."},...]
+func runSessionChatSave(args []string) int {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "usage: heb session chat-save <session_id>")
+		return 2
+	}
+	sessionID := args[0]
+
+	data, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "heb session chat-save: read stdin: %v\n", err)
+		return 1
+	}
+
+	var msgs []struct {
+		Role    string  `json:"role"`
+		Content string  `json:"content"`
+		Phase   *string `json:"phase,omitempty"`
+	}
+	if err := json.Unmarshal(data, &msgs); err != nil {
+		fmt.Fprintf(os.Stderr, "heb session chat-save: parse json: %v\n", err)
+		return 1
+	}
+
+	s, err := openStore()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "heb session chat-save: %v\n", err)
+		return 1
+	}
+	defer s.Close()
+
+	// Clear existing chat log for this session
+	if err := store.ClearGUIChat(s.DB(), sessionID); err != nil {
+		fmt.Fprintf(os.Stderr, "heb session chat-save: clear: %v\n", err)
+		return 1
+	}
+
+	// Write all messages
+	for _, msg := range msgs {
+		if _, err := store.WriteGUIChat(s.DB(), sessionID, msg.Role, msg.Content, msg.Phase); err != nil {
+			fmt.Fprintf(os.Stderr, "heb session chat-save: write: %v\n", err)
+			return 1
+		}
+	}
+
+	fmt.Fprintf(os.Stderr, "saved %d chat messages for session %s\n", len(msgs), sessionID)
+	return 0
+}
+
+// runSessionChatList returns all GUI chat messages for a session as JSON.
+// Usage: heb session chat-list <session_id>
+func runSessionChatList(args []string) int {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "usage: heb session chat-list <session_id>")
+		return 2
+	}
+	sessionID := args[0]
+
+	s, err := openStore()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "heb session chat-list: %v\n", err)
+		return 1
+	}
+	defer s.Close()
+
+	entries, err := store.ListGUIChat(s.DB(), sessionID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "heb session chat-list: %v\n", err)
+		return 1
+	}
+
+	out, err := json.Marshal(entries)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "heb session chat-list: marshal: %v\n", err)
+		return 1
+	}
+	fmt.Fprint(os.Stdout, string(out))
+	return 0
+}
+
+// openStore is a shared helper — opens the global heb store.
+func openStore() (*store.SQLiteStore, error) {
+	return store.Open()
 }

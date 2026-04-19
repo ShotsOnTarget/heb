@@ -78,6 +78,8 @@ Do NOT echo back mechanical fields (session_id, tokens, memory counts, files tou
     }
   ],
 
+  "confirmed_recalls": [],
+
   "prediction_reconciliation": null
 }
 
@@ -180,6 +182,15 @@ Confidence — calibrate tight. Most lessons from a routine session should fall 
 Calibration check: if more than half your session's lessons are >= 0.85, you are inflating. A session with no corrections and no explicit rules should produce a cluster around 0.70-0.80. Reserve 0.90+ for the moments the developer drew a clear line.
 
 Cosmetic corrections (per the impact field: colors, labels, text casing) do not earn 0.85+ confidence even when they feel emphatic. A correction like "change OVERLOAD to Overload" is cosmetic, confidence band 0.50-0.65 — do not stamp 0.90 because the correction was emphatic. Emphasis measures intensity, not the lesson's generalisability.
+
+confirmed_recalls — the explicit LTD attestation. The recall contract lists memories that were surfaced via edge spreading-activation (source: "edge"). Some of those edge-recalled memories will have actually informed the work this session — others were noise. List the tuples that genuinely helped, copied **verbatim** from the recall contract's edge-sourced memories. Anything you do not list will be treated as an unhelpful recall and the edge that surfaced it will weaken (LTD).
+
+Rules:
+- Copy the tuple body string EXACTLY as it appears in the recall contract (memories[].tuple where source == "edge"). The system joins on string equality — paraphrase will be treated as "not confirmed".
+- Only list memories that materially informed the implementation, decisions, or corrections. Do NOT list edge-recalled memories that were merely tangentially related, redundant with what you already knew, or that you had to work around.
+- It is fine to leave this empty. An empty array means "none of the edge-recalled memories pulled their weight this session" — that is a valid and useful signal.
+- This list is independent of lessons. A confirmed recall does not become a new memory; it just protects the edge that surfaced it from decay.
+- Do NOT include direct-match memories (source: "match" in the recall contract) — only edge-recalled ones. Direct matches are not subject to edge LTD.
 
 prediction_reconciliation — reconcile reflect predictions against what actually happened. For each element (files, approach, outcome, risks): matched, partial, missed, or wrong. Set to null if no prediction exists or if cold_start was true.
 
@@ -400,8 +411,20 @@ Reflect and Learn are not independent functions; they are the two halves that ma
     }
   ],
 
+  "confirmed_recalls": [],
+
   "prediction_reconciliation": null
 }
+
+## Confirmed recalls — the LTD attestation
+
+The recall contract you received at the start of this session listed memories surfaced via edge spreading-activation (source: "edge"). Some of those genuinely informed your work; others were noise. List the edge-recalled tuples that materially helped, copied **verbatim** from the recall contract.
+
+- Copy the tuple body string EXACTLY as it appeared. The system joins on string equality — paraphrase is treated as "not confirmed".
+- Only list memories that informed the implementation, decisions, or corrections. Skip ones that were tangentially related, redundant, or that you worked around.
+- Empty array is a valid and useful signal — it means none of the edge-recalled memories pulled their weight.
+- This list does NOT become new memory. It only protects the edges that surfaced these tuples from decay (LTD).
+- Do NOT include direct-match memories (source: "match"). Only edge-recalled ones.
 
 ## Lesson rules
 
@@ -488,6 +511,7 @@ func doLearnViaResume(s *store.SQLiteStore, sessionID string) (string, error) {
 	fmt.Fprintf(os.Stderr, "resuming claude session %s for learning...\n", claudeSessionID)
 
 	// Use claude --resume with --print and no tools allowed (pure JSON output)
+	start := time.Now()
 	result, err := runClaudePrint([]string{
 		"--print",
 		"--verbose",
@@ -498,6 +522,9 @@ func doLearnViaResume(s *store.SQLiteStore, sessionID string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("claude resume learn: %w", err)
 	}
+	emitStats("remember", apiUsage{In: result.InputTokens, Out: result.OutputTokens}, time.Since(start),
+		fmt.Sprintf("turns=%d", result.NumTurns),
+		fmt.Sprintf("cost=$%.4f", result.CostUSD))
 
 	return result.ResultText, nil
 }

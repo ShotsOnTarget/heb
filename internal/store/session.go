@@ -331,6 +331,59 @@ func ListResponses(db *sql.DB, sessionID string) ([]SessionResponse, error) {
 	return out, nil
 }
 
+// GUIChatEntry is a single message displayed in the GUI chat view.
+type GUIChatEntry struct {
+	ID        int64   `json:"id"`
+	SessionID string  `json:"session_id"`
+	Role      string  `json:"role"`
+	Content   string  `json:"content"`
+	Phase     *string `json:"phase,omitempty"`
+	CreatedAt int64   `json:"created_at"`
+}
+
+// WriteGUIChat appends a message to the GUI chat log for a session.
+func WriteGUIChat(db *sql.DB, sessionID, role, content string, phase *string) (int64, error) {
+	now := time.Now().UTC().Unix()
+	res, err := db.Exec(`
+		INSERT INTO gui_chat_log(session_id, role, content, phase, created_at)
+		VALUES(?, ?, ?, ?, ?)
+	`, sessionID, role, content, phase, now)
+	if err != nil {
+		return 0, fmt.Errorf("write gui chat: %w", err)
+	}
+	return res.LastInsertId()
+}
+
+// ClearGUIChat removes all chat messages for a session (used before re-writing).
+func ClearGUIChat(db *sql.DB, sessionID string) error {
+	_, err := db.Exec(`DELETE FROM gui_chat_log WHERE session_id = ?`, sessionID)
+	return err
+}
+
+// ListGUIChat returns all chat messages for a session in chronological order.
+func ListGUIChat(db *sql.DB, sessionID string) ([]GUIChatEntry, error) {
+	rows, err := db.Query(`
+		SELECT id, session_id, role, content, phase, created_at
+		FROM gui_chat_log
+		WHERE session_id = ?
+		ORDER BY created_at ASC, id ASC
+	`, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("list gui chat: %w", err)
+	}
+	defer rows.Close()
+
+	var out []GUIChatEntry
+	for rows.Next() {
+		var e GUIChatEntry
+		if err := rows.Scan(&e.ID, &e.SessionID, &e.Role, &e.Content, &e.Phase, &e.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, nil
+}
+
 // verifySession checks that a session exists.
 func verifySession(db *sql.DB, sessionID string) error {
 	var status string
@@ -361,6 +414,23 @@ func LatestActiveSession(db *sql.DB) (*Session, error) {
 	return &s, nil
 }
 
+// TrashSession marks a session as trashed (discarded without learning).
+func TrashSession(db *sql.DB, sessionID string) error {
+	now := time.Now().UTC().Unix()
+	res, err := db.Exec(`
+		UPDATE sessions SET status = 'trashed', closed_at = ?
+		WHERE id = ? AND status = 'active'
+	`, now, sessionID)
+	if err != nil {
+		return fmt.Errorf("trash session: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("session %q not found or not active", sessionID)
+	}
+	return nil
+}
+
 // CloseSession marks a session as complete.
 func CloseSession(db *sql.DB, sessionID string) error {
 	now := time.Now().UTC().Unix()
@@ -376,4 +446,41 @@ func CloseSession(db *sql.DB, sessionID string) error {
 		return fmt.Errorf("session %q not found or already closed", sessionID)
 	}
 	return nil
+}
+
+// RegisterProject inserts a project into the projects table. Idempotent.
+func RegisterProject(db *sql.DB, projectPath, name string) error {
+	now := time.Now().UTC().Unix()
+	_, err := db.Exec(`
+		INSERT INTO projects(path, name, created_at)
+		VALUES(?, ?, ?)
+		ON CONFLICT(path) DO NOTHING
+	`, projectPath, name, now)
+	return err
+}
+
+// ProjectRecord is a registered project.
+type ProjectRecord struct {
+	Path      string `json:"path"`
+	Name      string `json:"name"`
+	CreatedAt int64  `json:"created_at"`
+}
+
+// ListProjects returns all registered projects.
+func ListProjects(db *sql.DB) ([]ProjectRecord, error) {
+	rows, err := db.Query(`SELECT path, name, created_at FROM projects ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []ProjectRecord
+	for rows.Next() {
+		var p ProjectRecord
+		if err := rows.Scan(&p.Path, &p.Name, &p.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, nil
 }

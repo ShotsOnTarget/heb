@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/steelboltgames/heb/internal/retrieve"
 	"github.com/steelboltgames/heb/internal/store"
@@ -50,13 +51,14 @@ func runRecall(args []string) int {
 
 	// Resolve memories from the store (best-effort — empty on any failure
 	// so recall still works in cold start / non-repo contexts).
-	memories := resolveMemories(in.Tokens, cfg.MemoryLimit)
+	memories, maxScore := resolveMemories(in.Tokens, cfg.MemoryLimit, in.Project)
 
 	result := retrieve.Run(retrieve.Input{
 		SessionID: in.SessionID,
 		Project:   in.Project,
 		Tokens:    in.Tokens,
 	}, memories, retrieve.ExecRunner{}, cfg)
+	result.MaxPossibleScore = maxScore
 
 	switch cfg.Format {
 	case "human":
@@ -69,27 +71,44 @@ func runRecall(args []string) int {
 		fmt.Fprint(os.Stdout, retrieve.RenderJSON(result))
 	}
 
-	fmt.Fprintf(os.Stderr, "recall: %d memories, %d git, %d beads, %d tokens used\n",
-		len(result.Memories), len(result.GitRefs), len(result.Beads), result.TokensUsed)
+	fmt.Fprintf(os.Stderr, "recall: %d memories (%d/%d tok), %d git (%d/%d tok), %d beads\n",
+		len(result.Memories), result.TokensUsed, result.TokenBudget,
+		len(result.GitRefs), result.GitTokensUsed, result.GitTokenBudget,
+		len(result.Beads))
+
+	// Emit compact recall details to stderr for the GUI
+	now := time.Now().Unix()
+	for _, m := range result.Memories {
+		age := int((now - m.UpdatedAt) / 86400)
+		if age < 0 {
+			age = 0
+		}
+		tag := "match"
+		if m.Source == "edge" {
+			tag = "edge"
+		}
+		fmt.Fprintf(os.Stderr, "recall-mem: [%s %.2f] %s +%.2f (%dd)\n", tag, m.Score, m.Body, m.Weight, age)
+	}
+	for _, g := range result.GitRefs {
+		fmt.Fprintf(os.Stderr, "recall-git: [%.2f] %s %s (%dd)\n", g.Score, g.Hash, g.Message, int(g.AgeDays))
+	}
 	return 0
 }
 
 // resolveMemories opens the store and runs Recall, returning an empty
 // slice on any failure. Recall is best-effort — a missing store is a
-// valid cold-start state.
-func resolveMemories(tokens []string, limit int) []store.Scored {
-	root, err := store.RepoRoot()
+// valid cold-start state. Memories are scoped to the given project.
+// Also returns the theoretical score ceiling for this query so callers
+// can normalise Score → relevance band.
+func resolveMemories(tokens []string, limit int, project string) ([]store.Scored, float64) {
+	s, err := store.Open()
 	if err != nil {
-		return nil
-	}
-	s, err := store.Open(root)
-	if err != nil {
-		return nil
+		return nil, 0
 	}
 	defer s.Close()
-	mems, err := store.Recall(s.DB(), tokens, limit)
+	mems, maxPossible, err := store.Recall(s.DB(), tokens, limit, project)
 	if err != nil {
-		return nil
+		return nil, 0
 	}
-	return mems
+	return mems, maxPossible
 }

@@ -10,12 +10,7 @@ import (
 )
 
 func runStatus(_ []string) int {
-	root, err := store.RepoRoot()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "heb status: %v\n", err)
-		return 1
-	}
-	s, err := store.Open(root)
+	s, err := store.Open()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "heb status: %v\n", err)
 		return 1

@@ -65,6 +65,7 @@ type LearnResult struct {
 	Decisions        []Decision        `json:"decisions,omitempty"`
 	Lessons          []Lesson        `json:"lessons"`
 	RecalledViaEdges          FlexStringSlice          `json:"recalled_via_edges,omitempty"`
+	ConfirmedRecalls         FlexStringSlice          `json:"confirmed_recalls,omitempty"`
 	PredictionReconciliation *PredictionReconciliation `json:"prediction_reconciliation,omitempty"`
 
 	// Raw holds the full original payload so the episode row can
@@ -86,12 +87,64 @@ type PredictionReconciliation struct {
 // PredictionReconcileElement is one predicted-vs-actual comparison.
 type PredictionReconcileElement struct {
 	Element      string          `json:"element"`
-	Predicted    string          `json:"predicted"`
-	Actual       string          `json:"actual"`
+	Predicted    FlexString      `json:"predicted"`
+	Actual       FlexString      `json:"actual"`
 	Result       string          `json:"result"` // "matched" | "partial" | "missed" | "wrong"
 	SourceTuples FlexStringSlice `json:"source_tuples"`
 	Event        string          `json:"event"` // "prediction_confirmed" | "prediction_contradicted" | ""
 	Lesson       string          `json:"lesson,omitempty"`
+}
+
+// DeriveEventFromResult maps a reconciliation verdict to the event kind
+// used downstream for weight deltas and event logging. The mapping is
+// deterministic — the LLM's own "event" field is ignored so an omission
+// or mislabelling can't silently suppress the Hebbian loop.
+//
+//   matched → prediction_confirmed
+//   wrong   → prediction_contradicted
+//   partial → ""   (hedged verdict: no weight signal)
+//   missed  → ""   (handled via lesson extraction, not source-tuple delta)
+func DeriveEventFromResult(result string) string {
+	switch result {
+	case "matched":
+		return "prediction_confirmed"
+	case "wrong":
+		return "prediction_contradicted"
+	default:
+		return ""
+	}
+}
+
+// NormalisePredictionReconciliation overwrites each element's Event from
+// its Result via the deterministic mapping in DeriveEventFromResult.
+// Safe to call with nil.
+func NormalisePredictionReconciliation(pr *PredictionReconciliation) {
+	if pr == nil {
+		return
+	}
+	for i := range pr.Elements {
+		pr.Elements[i].Event = DeriveEventFromResult(pr.Elements[i].Result)
+	}
+}
+
+// FlexString unmarshals both "string" and ["array","of","strings"] into a single string.
+// Arrays are joined with ", ".
+type FlexString string
+
+func (f *FlexString) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		*f = FlexString(s)
+		return nil
+	}
+	var arr []string
+	if err := json.Unmarshal(data, &arr); err == nil {
+		*f = FlexString(strings.Join(arr, ", "))
+		return nil
+	}
+	// Fallback: use raw string
+	*f = FlexString(string(data))
+	return nil
 }
 
 // FlexStringSlice unmarshals both ["s·p·o"] and [["s","p","o"]] into []string.
@@ -217,14 +270,17 @@ type Result struct {
 	ThresholdMet        bool           `json:"threshold_met"`
 	ThresholdReason     string         `json:"threshold_reason,omitempty"`
 	Payload             Payload        `json:"-"`
-	Applied             []MemoryApply  `json:"applied"`
-	EdgesUpdated        int            `json:"edges_updated"`
-	EdgesDecayed        int            `json:"edges_decayed"`
-	EntanglementSignals int            `json:"entanglement_signals"`
-	EpisodeWritten      bool           `json:"episode_written"`
-	EpisodePath         string         `json:"episode_path,omitempty"`
-	Skipped             []SkippedTuple `json:"skipped"`
-	Errors              []string       `json:"errors"`
+	Applied                  []MemoryApply  `json:"applied"`
+	EdgesUpdated             int            `json:"edges_updated"`
+	EdgesDecayed             int            `json:"edges_decayed"`
+	EntanglementSignals      int            `json:"entanglement_signals"`
+	PredictionsConfirmed     int            `json:"predictions_confirmed"`
+	PredictionsContradicted  int            `json:"predictions_contradicted"`
+	PredictionsOrphaned      int            `json:"predictions_orphaned"` // source_tuples that did not resolve to an existing memory
+	EpisodeWritten           bool           `json:"episode_written"`
+	EpisodePath              string         `json:"episode_path,omitempty"`
+	Skipped                  []SkippedTuple `json:"skipped"`
+	Errors                   []string       `json:"errors"`
 }
 
 // MemoryApply is one row in Result.Applied — the post-store outcome of

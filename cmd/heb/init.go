@@ -3,17 +3,13 @@ package main
 import (
 	"fmt"
 	"os"
+	"path"
 
 	"github.com/steelboltgames/heb/internal/store"
 )
 
 func runInit(_ []string) int {
-	root, err := store.RepoRoot()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "heb init: %v\n", err)
-		return 1
-	}
-	s, created, err := store.Init(root)
+	s, created, err := store.Init()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "heb init: %v\n", err)
 		return 1
@@ -25,6 +21,19 @@ func runInit(_ []string) int {
 	} else {
 		fmt.Fprintf(os.Stderr, "heb already initialised at %s\n", s.Path())
 	}
+
+	// Register the current project so it appears in `heb projects`
+	projectPath, err := store.ProjectID()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "heb init: project id: %v\n", err)
+		return 0 // non-fatal — DB was created
+	}
+	name := path.Base(projectPath)
+	if err := store.RegisterProject(s.DB(), projectPath, name); err != nil {
+		fmt.Fprintf(os.Stderr, "heb init: register project: %v\n", err)
+		return 0
+	}
+	fmt.Fprintf(os.Stderr, "registered project: %s (%s)\n", name, projectPath)
 
 	return 0
 }

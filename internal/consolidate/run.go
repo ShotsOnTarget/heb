@@ -18,6 +18,11 @@ import (
 //  4. entanglement — surprise_touches → memoryDelta (entanglement_signal)
 //  5. episode    — always included, carries the full contract:learn>consolidate verbatim
 func Run(c LearnResult, cfg Config) Result {
+	// Derive Event from Result deterministically. The LLM's own "event"
+	// field is unreliable (frequently omitted); we re-derive in-place so
+	// every downstream branch sees a consistent value.
+	NormalisePredictionReconciliation(c.PredictionReconciliation)
+
 	met, reason := checkThreshold(c)
 
 	topicTokens := strings.Join(c.Tokens, ",")

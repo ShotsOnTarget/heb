@@ -113,6 +113,42 @@ func ApplyMemoryEvent(tx *sql.Tx, body, kind, reason, sessionID, beadID, topicTo
 	return id, newWeight, wasNew, nil
 }
 
+// AppendEvent writes a single event row without touching memory weight.
+// Used for audit-only event kinds (e.g. prediction_confirmed logged
+// before the reinforcement pathway is wired up, or traceability rows
+// that reference a memory without modifying it).
+//
+// Returns sql.ErrNoRows if the memory_id does not exist — the FK would
+// fail anyway; callers that want to skip missing memories should check
+// existence first and not call this.
+func AppendEvent(tx *sql.Tx, memoryID, kind, reason, sessionID, beadID, commitHash string, delta float64) error {
+	now := time.Now().UTC().Unix()
+	_, err := tx.Exec(`
+		INSERT INTO events(memory_id, kind, delta, reason, session_id, bead_id, commit_hash, created_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+	`, memoryID, kind, delta, nullIfEmpty(reason), nullIfEmpty(sessionID), nullIfEmpty(beadID), nullIfEmpty(commitHash), now)
+	if err != nil {
+		return fmt.Errorf("append event: %w", err)
+	}
+	return nil
+}
+
+// MemoryExists reports whether a memory row exists for the given ID.
+// Used before AppendEvent to skip source_tuples that don't resolve to a
+// real memory (reflect sometimes emits bodies that never made it into
+// the graph).
+func MemoryExists(tx *sql.Tx, memoryID string) (bool, error) {
+	var one int
+	err := tx.QueryRow(`SELECT 1 FROM memories WHERE id = ?`, memoryID).Scan(&one)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("check memory: %w", err)
+	}
+	return true, nil
+}
+
 // AddProvenance adds a provenance row for a memory if not already present
 // for this (memory, project, session) triple.
 func AddProvenance(tx *sql.Tx, memoryID, project, sessionID, beadID string) error {
@@ -238,14 +274,30 @@ const attentionMinKeep = 2
 //
 // Spreading activation: after the attention filter, one-hop edge
 // expansion adds neighbours not already in the result set.
-func Recall(db *sql.DB, tokens []string, limit int) ([]Scored, error) {
+// Recall returns scored memories plus the theoretical score ceiling for
+// the query (Σ IDF × (K1+1), skipping zero-df tokens). The ceiling lets
+// callers normalise Score into a stable [0, ~0.5] practical range so
+// downstream consumers (LLMs) have a query-independent frame of reference.
+func Recall(db *sql.DB, tokens []string, limit int, project string) ([]Scored, float64, error) {
 	if limit <= 0 || limit > RecallLimit {
 		limit = RecallLimit
 	}
 
-	rows, err := db.Query(`SELECT id, body, weight, status, topic_tokens, created_at, updated_at FROM memories WHERE status = 'active'`)
+	// Filter memories by project via provenance table.
+	var rows *sql.Rows
+	var err error
+	if project != "" {
+		rows, err = db.Query(`
+			SELECT DISTINCT m.id, m.body, m.weight, m.status, m.topic_tokens, m.created_at, m.updated_at
+			FROM memories m
+			JOIN provenance p ON m.id = p.memory_id
+			WHERE m.status = 'active' AND p.project = ?
+		`, project)
+	} else {
+		rows, err = db.Query(`SELECT id, body, weight, status, topic_tokens, created_at, updated_at FROM memories WHERE status = 'active'`)
+	}
 	if err != nil {
-		return nil, fmt.Errorf("scan memories: %w", err)
+		return nil, 0, fmt.Errorf("scan memories: %w", err)
 	}
 	defer rows.Close()
 
@@ -257,7 +309,7 @@ func Recall(db *sql.DB, tokens []string, limit int) ([]Scored, error) {
 	for rows.Next() {
 		var m Memory
 		if err := rows.Scan(&m.ID, &m.Body, &m.Weight, &m.Status, &m.TopicTokens, &m.CreatedAt, &m.UpdatedAt); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		ageDays := (now - float64(m.UpdatedAt)) / 86400
 		if ageDays < 0 {
@@ -273,6 +325,8 @@ func Recall(db *sql.DB, tokens []string, limit int) ([]Scored, error) {
 
 	// BM25 + weight + recency scoring via shared scorer.
 	ranked := memory.BM25Rank(docs, tokens)
+	// Theoretical score ceiling for this query against the corpus.
+	maxPossible := memory.BM25MaxPossible(docs, tokens)
 
 	scored := make([]Scored, 0, len(ranked))
 	for _, r := range ranked {
@@ -289,21 +343,32 @@ func Recall(db *sql.DB, tokens []string, limit int) ([]Scored, error) {
 	}
 	var neighbours []Scored
 	for _, s := range scored {
-		nrows, err := db.Query(`
-			SELECT m.id, m.body, m.weight, m.status, m.topic_tokens, m.created_at, m.updated_at, e.strength
-			FROM edges e
-			JOIN memories m ON m.id = CASE WHEN e.a_id = ? THEN e.b_id ELSE e.a_id END
-			WHERE (e.a_id = ? OR e.b_id = ?) AND e.strength > 0 AND m.status = 'active'
-		`, s.ID, s.ID, s.ID)
+		var nrows *sql.Rows
+		if project != "" {
+			nrows, err = db.Query(`
+				SELECT m.id, m.body, m.weight, m.status, m.topic_tokens, m.created_at, m.updated_at, e.strength
+				FROM edges e
+				JOIN memories m ON m.id = CASE WHEN e.a_id = ? THEN e.b_id ELSE e.a_id END
+				JOIN provenance p ON m.id = p.memory_id AND p.project = ?
+				WHERE (e.a_id = ? OR e.b_id = ?) AND e.strength > 0 AND m.status = 'active'
+			`, s.ID, project, s.ID, s.ID)
+		} else {
+			nrows, err = db.Query(`
+				SELECT m.id, m.body, m.weight, m.status, m.topic_tokens, m.created_at, m.updated_at, e.strength
+				FROM edges e
+				JOIN memories m ON m.id = CASE WHEN e.a_id = ? THEN e.b_id ELSE e.a_id END
+				WHERE (e.a_id = ? OR e.b_id = ?) AND e.strength > 0 AND m.status = 'active'
+			`, s.ID, s.ID, s.ID)
+		}
 		if err != nil {
-			return nil, fmt.Errorf("edge expand: %w", err)
+			return nil, 0, fmt.Errorf("edge expand: %w", err)
 		}
 		for nrows.Next() {
 			var m Memory
 			var strength float64
 			if err := nrows.Scan(&m.ID, &m.Body, &m.Weight, &m.Status, &m.TopicTokens, &m.CreatedAt, &m.UpdatedAt, &strength); err != nil {
 				nrows.Close()
-				return nil, err
+				return nil, 0, err
 			}
 			if seen[m.ID] {
 				continue
@@ -340,7 +405,7 @@ func Recall(db *sql.DB, tokens []string, limit int) ([]Scored, error) {
 		}
 		combined = append(pinned, rest...)
 	}
-	return combined, nil
+	return combined, maxPossible, nil
 }
 
 // attentionFilter trims a sorted score list at the last "significant gap"

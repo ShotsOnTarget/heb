@@ -36,12 +36,7 @@ func runDreamSeeds(args []string) int {
 		return 2
 	}
 
-	root, err := store.RepoRoot()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "heb dream seeds: %v\n", err)
-		return 1
-	}
-	s, err := store.Open(root)
+	s, err := store.Open()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "heb dream seeds: %v\n", err)
 		return 1
@@ -84,12 +79,7 @@ func runDreamRandomPairs(args []string) int {
 		return 2
 	}
 
-	root, err := store.RepoRoot()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "heb dream random-pairs: %v\n", err)
-		return 1
-	}
-	s, err := store.Open(root)
+	s, err := store.Open()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "heb dream random-pairs: %v\n", err)
 		return 1

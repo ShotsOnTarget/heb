@@ -7,3 +7,13 @@ heb.db
 .dolt/
 *.db
 .beads-credential-key
+
+# Electron build artifacts
+electron/node_modules/
+electron/dist/
+
+# Windows crash dumps
+*.stackdump
+
+# Temp / scratch
+tmp_*.py

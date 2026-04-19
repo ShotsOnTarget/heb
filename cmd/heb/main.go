@@ -24,6 +24,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "  remember     learn + consolidate + close session in one step")
 		fmt.Fprintln(os.Stderr, "  config       get/set configuration (verbosity: loud|quiet|mute)")
 		fmt.Fprintln(os.Stderr, "  claude       manage claude commands (install, update, status)")
+		fmt.Fprintln(os.Stderr, "  gui          launch the desktop interface")
 		os.Exit(2)
 	}
 	switch os.Args[1] {
@@ -57,6 +58,12 @@ func main() {
 		os.Exit(runRemember(os.Args[2:]))
 	case "claude":
 		os.Exit(runClaude(os.Args[2:]))
+	case "projects":
+		os.Exit(runProjects(os.Args[2:]))
+	case "gui":
+		os.Exit(runGUI(os.Args[2:]))
+	case "build":
+		os.Exit(runBuild(os.Args[2:]))
 	case "version":
 		fmt.Println("heb " + Version)
 		os.Exit(0)

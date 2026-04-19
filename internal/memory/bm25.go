@@ -138,6 +138,48 @@ func BM25Rank(docs []Doc, query []string) []BM25Scored {
 	return results
 }
 
+// BM25MaxPossible returns the theoretical ceiling that BM25Rank's score
+// could reach for the given query against the corpus — Σ IDF[i] × (K1+1),
+// skipping tokens with zero document frequency (they can't contribute to
+// any real score, so they'd only inflate the ceiling). Used to normalise
+// returned scores into a stable range regardless of query absolute scale.
+// Weight and recency factors both cap at 1.0, so BM25 ceiling == score ceiling.
+func BM25MaxPossible(docs []Doc, query []string) float64 {
+	if len(docs) == 0 || len(query) == 0 {
+		return 0
+	}
+	seen := make(map[string]bool)
+	var normalized []string
+	for _, t := range query {
+		for _, w := range Tokenize(t) {
+			if !seen[w] {
+				seen[w] = true
+				normalized = append(normalized, w)
+			}
+		}
+	}
+	if len(normalized) == 0 {
+		return 0
+	}
+	N := float64(len(docs))
+	var max float64
+	for _, qt := range normalized {
+		var df int
+		for _, d := range docs {
+			if MatchesWord(d.Words, qt) {
+				df++
+			}
+		}
+		if df == 0 {
+			continue
+		}
+		n := float64(df)
+		idf := math.Log((N-n+0.5)/(n+0.5) + 1)
+		max += idf * (BM25K1 + 1)
+	}
+	return max
+}
+
 func sortBM25Scored(s []BM25Scored) {
 	// Simple insertion sort — corpus sizes are small (≤16 memories, ≤10 git refs).
 	for i := 1; i < len(s); i++ {

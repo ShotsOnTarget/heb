@@ -119,6 +119,10 @@ func StderrSummary(r Result) string {
 
 	fmt.Fprintf(&b, "consolidate: %d new, %d reinforced, %d edges (+%d decayed), %d entanglement, episode=%v",
 		len(newMems), len(reinforcedMems), r.EdgesUpdated, r.EdgesDecayed, entCount, r.EpisodeWritten)
+	if r.PredictionsConfirmed+r.PredictionsContradicted+r.PredictionsOrphaned > 0 {
+		fmt.Fprintf(&b, ", predictions=%d confirmed / %d contradicted (%d orphaned)",
+			r.PredictionsConfirmed, r.PredictionsContradicted, r.PredictionsOrphaned)
+	}
 
 	if len(newMems) > 0 {
 		b.WriteString("\n  learned:")

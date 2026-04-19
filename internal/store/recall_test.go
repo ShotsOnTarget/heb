@@ -28,7 +28,7 @@ func TestRecall_BothConflictingMemoriesSurface(t *testing.T) {
 	// Unrelated memory
 	seedMemoryFull(t, db, "CombatScreen syncs combat state", 0.60, now-5*86400)
 
-	results, err := Recall(db, []string{"shop", "encounter", "costs"}, 16)
+	results, _, err := Recall(db, []string{"shop", "encounter", "costs"}, 16, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestRecall_HigherWeightOldMemoryCanOutscoreNewer(t *testing.T) {
 	seedMemoryFull(t, db, "ShopEncounter costs 4", 0.80, now-30*86400) // 30 days old, high weight
 	seedMemoryFull(t, db, "ShopEncounter costs 6", 0.50, now-1*86400)  // 1 day old, lower weight
 
-	results, err := Recall(db, []string{"shop", "encounter", "costs"}, 16)
+	results, _, err := Recall(db, []string{"shop", "encounter", "costs"}, 16, "")
 	if err != nil {
 		t.Fatal(err)
 	}

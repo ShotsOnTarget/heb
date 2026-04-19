@@ -60,12 +60,33 @@ func RenderHuman(r *Result) string {
 }
 
 // RecallMemory is the emitted JSON shape for one memory entry.
+// Relevance is a coarse band ("strong" | "moderate" | "weak" | "trace")
+// derived from Score / MaxPossibleScore — a stable signal the LLM can
+// read without calibration. Memories are emitted ranked best-first, so
+// within-band ordering is preserved by list order.
 type RecallMemory struct {
-	Tuple     string  `json:"tuple"`
+	Tuple     string `json:"tuple"`
 	Weight    float64 `json:"weight"`
-	Source    string  `json:"source"`
-	Relevance float64 `json:"relevance"`
-	AgeDays   int     `json:"age_days"`
+	Source    string `json:"source"`
+	Relevance string `json:"relevance"`
+	AgeDays   int    `json:"age_days"`
+}
+
+// relevanceBand maps a normalised score ratio to a coarse label.
+// Thresholds were tuned against real recall output — top-tier matches
+// typically land at ~0.35-0.50 in practice because weight and recency
+// factors rarely hit 1.0 and tf never saturates on every query token.
+func relevanceBand(normalised float64) string {
+	switch {
+	case normalised >= 0.35:
+		return "strong"
+	case normalised >= 0.20:
+		return "moderate"
+	case normalised >= 0.10:
+		return "weak"
+	default:
+		return "trace"
+	}
 }
 
 // RecallResult is the contract:recall>reflect JSON output shape.
@@ -100,17 +121,29 @@ func RenderJSON(r *Result) string {
 	if out.Beads == nil {
 		out.Beads = []BeadRef{}
 	}
+	// Normalise Score into a stable band label. Two branches because the
+	// two sources use different score scales:
+	//   - match: BM25-based, unbounded, needs division by theoretical ceiling
+	//   - edge:  weight×0.5 + strength×0.5, already in [0, ~0.9] by construction
+	// The Source field is echoed into the contract so the LLM can tell
+	// a "strong edge" (adjacency signal) apart from a "strong match" (text hit).
 	now := time.Now().Unix()
 	for _, m := range r.Memories {
 		age := int((now - m.UpdatedAt) / 86400)
 		if age < 0 {
 			age = 0
 		}
+		var ratio float64
+		if m.Source == "edge" {
+			ratio = m.Score
+		} else if r.MaxPossibleScore > 0 {
+			ratio = m.Score / r.MaxPossibleScore
+		}
 		out.Memories = append(out.Memories, RecallMemory{
 			Tuple:     m.TupleString(),
 			Weight:    m.Weight,
 			Source:    m.Source,
-			Relevance: m.Score,
+			Relevance: relevanceBand(ratio),
 			AgeDays:   age,
 		})
 	}
@@ -118,11 +151,15 @@ func RenderJSON(r *Result) string {
 	return string(buf) + "\n"
 }
 
-// measureRender is a measureFunc that returns the token count of the
-// human-rendered block. Used by Run() to wire budget.go to format.go
+// measureRender is a measureFunc that returns the token count of only the
+// memory entries in the result. Used by Run() to wire budget.go to format.go
 // without a circular import.
 func measureRender(r *Result) int {
-	return charsToTokens(len(RenderHuman(r)))
+	var total int
+	for _, m := range r.Memories {
+		total += memoryTokens(m)
+	}
+	return total
 }
 
 // Ensure store.Scored is referenced so the import isn't ever dropped
