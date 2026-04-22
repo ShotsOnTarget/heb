@@ -18,6 +18,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "  session      durable pipeline session state")
 		fmt.Fprintln(os.Stderr, "  status       graph health and statistics")
 		fmt.Fprintln(os.Stderr, "  dream        dream subcommands (seeds, random-pairs, write, pairs)")
+		fmt.Fprintln(os.Stderr, "  memories     list active memories (optional --project filter)")
 		fmt.Fprintln(os.Stderr, "  purge        delete memories by ID")
 		fmt.Fprintln(os.Stderr, "  resume       continue an open session with a new prompt via claude --resume")
 		fmt.Fprintln(os.Stderr, "  learn        extract lessons from a session's transcript via LLM")
@@ -40,6 +41,8 @@ func main() {
 		os.Exit(runStatus(os.Args[2:]))
 	case "dream":
 		os.Exit(runDream(os.Args[2:]))
+	case "memories":
+		os.Exit(runMemories(os.Args[2:]))
 	case "purge":
 		os.Exit(runPurge(os.Args[2:]))
 	case "config":

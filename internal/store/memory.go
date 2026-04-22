@@ -465,6 +465,44 @@ func WriteEpisode(tx *sql.Tx, sessionID, payload string) (bool, error) {
 	return n > 0, nil
 }
 
+// ListMemories returns all active memories, ordered by weight desc then
+// updated_at desc. If project is non-empty, results are filtered to
+// memories whose provenance includes that project.
+func ListMemories(db *sql.DB, project string) ([]Memory, error) {
+	var rows *sql.Rows
+	var err error
+	if project != "" {
+		rows, err = db.Query(`
+			SELECT DISTINCT m.id, m.body, m.weight, m.status, m.topic_tokens, m.created_at, m.updated_at
+			FROM memories m
+			JOIN provenance p ON m.id = p.memory_id
+			WHERE m.status = 'active' AND p.project = ?
+			ORDER BY m.weight DESC, m.updated_at DESC
+		`, project)
+	} else {
+		rows, err = db.Query(`
+			SELECT id, body, weight, status, topic_tokens, created_at, updated_at
+			FROM memories
+			WHERE status = 'active'
+			ORDER BY weight DESC, updated_at DESC
+		`)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list memories: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Memory
+	for rows.Next() {
+		var m Memory
+		if err := rows.Scan(&m.ID, &m.Body, &m.Weight, &m.Status, &m.TopicTokens, &m.CreatedAt, &m.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, nil
+}
+
 // PurgeMemories deletes memories by ID. Cascades to events, provenance
 // via foreign keys; edges cleaned up explicitly.
 func PurgeMemories(db *sql.DB, ids []string) (int, error) {

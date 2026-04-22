@@ -58,7 +58,8 @@
       "Bash(go doc *)",
       "Bash(go mod *)",
       "Bash(sed -n '1,20p' go.mod)",
-      "Bash(tasklist //FI \"IMAGENAME eq git.exe\")"
+      "Bash(tasklist //FI \"IMAGENAME eq git.exe\")",
+      "Bash(git push *)"
     ]
   }
 }
