@@ -17,3 +17,6 @@ electron/dist/
 
 # Temp / scratch
 tmp_*.py
+
+# Claude Code per-user settings (shared settings.json would still be tracked)
+.claude/settings.local.json
