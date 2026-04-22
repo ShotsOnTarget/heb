@@ -13,7 +13,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "  sense        parse a prompt into tokens via LLM")
 		fmt.Fprintln(os.Stderr, "  retrieve     sense + retrieve context from memory/git/beads")
 		fmt.Fprintln(os.Stderr, "  reflect      sense + retrieve + reconcile memories against prompt")
-		fmt.Fprintln(os.Stderr, "  recall       retrieve memories (contract:sense>recall JSON on stdin)")
+		fmt.Fprintln(os.Stderr, "  recall       retrieve memories for a prompt (sense + recall) or from stdin JSON")
 		fmt.Fprintln(os.Stderr, "  consolidate  apply session learning (contract:learn>consolidate JSON on stdin)")
 		fmt.Fprintln(os.Stderr, "  session      durable pipeline session state")
 		fmt.Fprintln(os.Stderr, "  status       graph health and statistics")

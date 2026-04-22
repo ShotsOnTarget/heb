@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/steelboltgames/heb/internal/retrieve"
@@ -36,16 +37,30 @@ func runRecall(args []string) int {
 		return 2
 	}
 
-	data, err := io.ReadAll(os.Stdin)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "heb recall: read stdin: %v\n", err)
-		return 1
-	}
 	var in recallInput
-	if len(data) > 0 {
-		if err := json.Unmarshal(data, &in); err != nil {
-			fmt.Fprintf(os.Stderr, "heb recall: parse json: %v\n", err)
+	if fs.NArg() > 0 {
+		// Positional args: run sense on the prompt so recall sees the same
+		// tokens it would get inside the full pipeline.
+		prompt := strings.Join(fs.Args(), " ")
+		sense, _, err := doSense(prompt)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "heb recall: %v\n", err)
 			return 1
+		}
+		in.SessionID = sense.SessionID
+		in.Project = sense.Project
+		in.Tokens = splitTokens(sense.Tokens)
+	} else {
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "heb recall: read stdin: %v\n", err)
+			return 1
+		}
+		if len(data) > 0 {
+			if err := json.Unmarshal(data, &in); err != nil {
+				fmt.Fprintf(os.Stderr, "heb recall: parse json: %v\n", err)
+				return 1
+			}
 		}
 	}
 
