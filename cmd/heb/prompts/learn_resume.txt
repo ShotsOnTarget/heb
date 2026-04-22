@@ -1,0 +1,133 @@
+# Session Learning Task
+
+Review this conversation and produce a JSON object with your analysis. You already have full context — do NOT use any tools.
+
+Output ONLY the JSON object below — no markdown fences, no preamble.
+
+## The predict/verify loop
+
+You are the **verify** half of a two-step self-calibration loop. Earlier in this session, **Reflect** issued falsifiable predictions traceable to specific source memories. Execution then happened. Your job now is to reconcile each prediction element against what actually happened — matched predictions apply a small positive delta to their source tuples, wrong predictions apply a negative delta, missed outcomes become new lessons.
+
+Reflect and Learn are not independent functions; they are the two halves that make the loop work. The reflect output you saw earlier is a specific hypothesis the graph made about this session, waiting for your verdict. Classify each element decisively. Hedging to "partial" everywhere produces no weight signal and starves the loop. When evidence supports matched or wrong, commit.
+
+{
+  "implementation": {
+    "surprise_touches": [],
+    "approach":         "one sentence past tense — what you actually did",
+    "patterns_used":    []
+  },
+
+  "decisions": [
+    {
+      "question": "question you asked the developer",
+      "answer":   "what they answered",
+      "weight":   "high | medium | low"
+    }
+  ],
+
+  "corrections": [
+    {
+      "what":       "what you did wrong (past tense)",
+      "correction": "what the developer said instead",
+      "intensity":  0.5,
+      "impact":     "cosmetic | behavioral | architectural"
+    }
+  ],
+
+  "completed": true,
+
+  "lessons": [
+    {
+      "body":       "terse atom — max 12 words, noun-verb-noun preferred",
+      "scope":      "project | universal_candidate",
+      "confidence": 0.75,
+      "evidence":   "what in the session supports this",
+      "source":     "session | prediction"
+    }
+  ],
+
+  "confirmed_recalls": [],
+
+  "prediction_reconciliation": null
+}
+
+## Confirmed recalls — the LTD attestation
+
+The recall contract you received at the start of this session listed memories surfaced via edge spreading-activation (source: "edge"). Some of those genuinely informed your work; others were noise. List the edge-recalled tuples that materially helped, copied **verbatim** from the recall contract.
+
+- Copy the tuple body string EXACTLY as it appeared. The system joins on string equality — paraphrase is treated as "not confirmed".
+- Only list memories that informed the implementation, decisions, or corrections. Skip ones that were tangentially related, redundant, or that you worked around.
+- Empty array is a valid and useful signal — it means none of the edge-recalled memories pulled their weight.
+- This list does NOT become new memory. It only protects the edges that surfaced these tuples from decay (LTD).
+- Do NOT include direct-match memories (source: "match"). Only edge-recalled ones.
+
+## Lesson rules
+
+- Max 8 lessons, min 0. Only write lessons with confidence >= 0.50.
+- Each body MUST be <= 12 words. Verbose atoms are penalised.
+- Do NOT describe what code changed (git log captures that).
+- Write lessons that capture WHY, WHEN, or HOW — things code alone doesn't tell you.
+- Correction-derived lessons: cosmetic corrections rarely warrant lessons. Behavioral → 0.75-0.85. Architectural → 0.85-0.95.
+- Code anchor lessons (map identifier→purpose) do NOT count against the 8-lesson max. Cap at 4.
+- Only write lessons if: corrections exist, task incomplete, decisions exist, files touched > 0, or new non-obvious observations.
+
+## Confidence — calibrate tight
+
+Most routine-session lessons belong in 0.70-0.80. If more than half your session's lessons are >= 0.85, you are inflating.
+
+- **0.90+** — developer stated this as an explicit rule. You must be able to quote them ("always X", "never Y", a hard correction). If you cannot, not 0.90.
+- **0.80-0.89** — observed pattern confirmed by a behavioral/architectural correction or a recorded decision. Active endorsement, not non-objection.
+- **0.70-0.79** — observed pattern, developer accepted the work without pushback. Default band.
+- **0.50-0.69** — inferred, not confirmed. Hypothesis.
+- **<0.50** — do not write.
+
+Cosmetic corrections (colors, labels, text casing) stay at 0.50-0.65 even when emphatic. Emphasis measures intensity, not lesson generalisability.
+
+## Correction rules
+
+- Only include corrections where the developer pushed back on your work.
+- intensity: 0.1-0.3 minor, 0.4-0.6 clear, 0.7-0.8 emphatic, 0.9-1.0 hard/caps/repetition.
+- Empty array if none.
+
+## Decision rules
+
+- Every question you asked AND the developer answered.
+- weight: "high" (design), "medium" (clarification), "low" (confirmation).
+- Empty array if you asked nothing.
+
+## Prediction reconciliation
+
+If you received a Reflect analysis with predictions at the start, reconcile each element:
+{
+  "cold_start": false,
+  "elements": [
+    {
+      "element":   "files | approach | outcome | risks",
+      "predicted": "what was predicted",
+      "actual":    "what actually happened",
+      "result":    "matched | partial | missed | wrong",
+      "lesson":    "correction text or null"
+    }
+  ],
+  "matched_count": 0,
+  "total_count":   0,
+  "overall":       "matched | partial | missed",
+  "summary":       "one-line summary"
+}
+Set to null if no prediction was provided or if this was a cold start.
+
+### Verdict specificity — partial is narrow, not safe
+
+"partial" produces no clean weight delta — use it only when the prediction is genuinely half-true. Hedging to partial on a prediction that was cleanly right or cleanly wrong starves the Hebbian loop.
+
+- **matched** — the claim held. Extras happening that were not predicted become separate "missed" elements, not a partial qualifier.
+- **wrong** — the claim contradicted reality. Not "imprecise" — contradicted. Wrong file, wrong language, wrong approach → wrong.
+- **missed** — something significant happened that was not predicted at all. Separate element.
+- **partial** — literally half-true. One of two equally-predicted items was correct; the other was not. A directionally correct but imprecise prediction is NOT partial.
+
+BAD (hedge): predicted file A, actual file B → wrong, not partial.
+BAD (hedge): predicted both files A and B; both were touched plus C → matched, with C as a separate "missed".
+BAD (hedge): predicted one language, actual another → wrong, not partial.
+GOOD: predicted two equally-weighted files, one touched and one not → partial.
+
+Before marking partial, ask: if I had to pick matched or wrong, which is closer? If there is an answer, that is the verdict.

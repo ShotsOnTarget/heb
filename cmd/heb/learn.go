@@ -1,6 +1,7 @@
 package main
 
 import (
+	_ "embed"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -15,7 +16,22 @@ import (
 	"github.com/steelboltgames/heb/internal/store"
 )
 
-const learnSystemPrompt = `You are a pure session learner. Your only job is to read a transcript of a developer's session with an AI agent and emit a JSON object containing your judgment about the session.
+// learnSystemPrompt is the API-mode learn contract, loaded from prompts/learn.txt.
+//
+//go:embed prompts/learn.txt
+var learnSystemPrompt string
+
+// resumeLearnPrompt is the Claude-resume-mode learn prompt, loaded from prompts/learn_resume.txt.
+//
+//go:embed prompts/learn_resume.txt
+var resumeLearnPrompt string
+
+// commitMsgSystemPrompt is the commit-message LLM contract, loaded from prompts/commit_msg.txt.
+//
+//go:embed prompts/commit_msg.txt
+var commitMsgSystemPrompt string
+
+/* LEGACY_LEARN_PROMPT_START
 
 ## The predict/verify loop
 
@@ -239,7 +255,8 @@ GOOD: predicted "heb.exe references may exist in test scripts or documentation",
 
 GOOD: predicted two equally-weighted files, one touched and one not. Half the claim held. Partial.
 
-Before marking partial, ask: if I had to pick matched or wrong, which is closer? If there is an answer, that is the correct verdict.`
+Before marking partial, ask: if I had to pick matched or wrong, which is closer? If there is an answer, that is the correct verdict.
+*/
 
 // doLearn runs the learn step: gathers contracts + transcript from the DB,
 // calls an LLM to produce a contract:learn>consolidate JSON, and persists it.
@@ -360,10 +377,8 @@ func doLearnViaAPI(s *store.SQLiteStore, sessionID, systemPrompt, senseJSON, rec
 	return raw, nil
 }
 
-// resumeLearnPrompt is a focused prompt for resume-mode learning.
-// Claude already has the full session in context — it only needs to produce
-// the judgment fields. Go backfills all the mechanical copy-paste fields after.
-const resumeLearnPrompt = `# Session Learning Task
+/* LEGACY_RESUME_LEARN_PROMPT — now loaded from prompts/learn_resume.txt
+# Session Learning Task
 
 Review this conversation and produce a JSON object with your analysis. You already have full context — do NOT use any tools.
 
@@ -495,7 +510,8 @@ BAD (hedge): predicted both files A and B; both were touched plus C → matched,
 BAD (hedge): predicted one language, actual another → wrong, not partial.
 GOOD: predicted two equally-weighted files, one touched and one not → partial.
 
-Before marking partial, ask: if I had to pick matched or wrong, which is closer? If there is an answer, that is the verdict.`
+Before marking partial, ask: if I had to pick matched or wrong, which is closer? If there is an answer, that is the verdict.
+*/
 
 // doLearnViaResume resumes the Claude Code session with a focused learn prompt.
 // Claude already has full conversation context — it only produces judgment fields
@@ -1379,8 +1395,6 @@ func commitSessionWork(repoRoot, learnJSON string, lessonsWritten int) error {
 	fmt.Fprintln(os.Stderr, "committed")
 	return nil
 }
-
-const commitMsgSystemPrompt = `You write git commit messages. Output ONLY the commit subject line (max 72 chars). Use conventional commit format (feat:, fix:, refactor:, docs:, chore:, etc.). Describe the actual work, not the pipeline. No quotes, no explanation.`
 
 // generateCommitMessage calls a fast LLM to produce a one-line commit subject.
 func generateCommitMessage(repoRoot, rawPrompt, approach string, filesTouched []string, lessonCount, consolidatedCount int) (string, error) {
